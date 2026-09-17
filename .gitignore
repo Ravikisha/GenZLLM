@@ -12,3 +12,7 @@ corpus/
 checkpoints/
 .ipynb_checkpoints/
 .DS_Store
+.venv/
+.ckpt_local/
+.ckpt_cache/
+tokenizer/

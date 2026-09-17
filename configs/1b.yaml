@@ -1,0 +1,80 @@
+# bussin-1b -- see docs/SPEC.md 7.2 and 8.3
+# Sizes and step counts here are exact, not rounded.
+
+model:
+  name: bussin-1b
+  vocab_size: 49152          # <= 65536 so token shards store as uint16 (SPEC 6.7)
+  n_layers: 24
+  d_model: 2048
+  n_heads: 32
+  n_kv_heads: 8       # GQA
+  head_dim: 64
+  max_seq_len: 2048
+  tie_embeddings: false
+  norm_eps: 1.0e-5
+  rope_theta: 10000.0
+  dropout: 0.0
+  z_loss: 1.0e-4             # guards fp16 logit drift on pre-Ampere GPUs
+  use_document_mask: true    # packed short chat messages must not attend across
+
+train:
+  run_id: bussin-1b-v1
+  total_tokens: 25000000000
+  total_steps: 23841
+  global_batch_tokens: 1048576
+  seq_len: 2048
+
+  lr_max: 0.0003
+  lr_min: 3.0e-05
+  warmup_steps: 500
+  stable_frac: 0.85          # WSD: decay begins at step 20264
+  weight_decay: 0.1
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  grad_clip: 1.0
+
+  log_every: 10
+  val_every: 500
+  val_batches: 20
+  full_val_every: 2000
+  checkpoint_every_s: 5400   # 90 min
+  milestone_every: 2000
+  heartbeat_every_s: 600
+
+  gradient_checkpointing: true
+  seed: 1337
+
+# Micro-batch per device. Left null, bootstrap picks a default for the detected
+# hardware. Grad accumulation is always derived so that
+# micro_batch * accum * n_devices * seq_len == global_batch_tokens, exactly.
+batch:
+  micro_batch: null
+  micro_batch_hints:
+    "kaggle-gpu:T4": 2
+    "kaggle-tpu": 4
+    "local:cpu": 1
+
+# Data curriculum. Stage boundaries are fractions of total_steps and are aligned
+# to the WSD phases: S3 begins where the learning rate starts decaying, so the
+# Gen-Z anneal and the LR decay are the same curve (SPEC 8.2, 11.1).
+curriculum:
+  - name: S1
+    until_frac: 0.650
+    mixture: {general: 1.00}
+  - name: S2
+    until_frac: 0.950
+    mixture: {general: 0.38, internet: 0.36, genz: 0.21, lexicon: 0.02, hinglish: 0.03}
+  - name: S3
+    until_frac: 1.000
+    mixture: {general: 0.18, internet: 0.24, genz: 0.51, lexicon: 0.03, hinglish: 0.04}
+
+relay:
+  state_uri: hf://CHANGEME/bussin-ckpt      # private repo; also holds RUN_STATE.json
+  ckpt_uri:  hf://CHANGEME/bussin-ckpt
+  keep_rolling: 2
+  lease_margin_s: 1800
+
+data:
+  manifest: /kaggle/input/bussin-corpus/manifest.json
+  val_manifest: /kaggle/input/bussin-corpus/val_manifest.json
+  tokenizer: tokenizer/tokenizer.json
