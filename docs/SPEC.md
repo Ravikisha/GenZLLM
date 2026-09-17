@@ -217,6 +217,35 @@ It carries **`time` and `score`**. That means you can build a **dated lexicon**:
 
 No other dataset in this space carries timestamps. This is the only one that lets you distinguish *current* from *dead* slang **mechanically instead of by hand.**
 
+### Correction from implementation (measured 2026-09-17) [V]
+
+Building the lexicon revealed a limit that the dataset card does not state:
+
+> **The dump's most recent definition is dated 2023-11-09.** Its year histogram runs 1999-2023 and stops.
+
+Probing 19 contemporary terms against the built lexicon, **13 were absent**: `gyatt`, `delulu`, `mogging`, `looksmaxxing`, `skibidi`, `sigma`, `aura`, `cooked`, `bussin`, `yap`, `glazing`, `pookie`, `crash out`. Only `rizz`, `mid`, `ick`, `npc`, `no cap` were present.
+
+**Consequence [R]:** a dated dictionary is authoritative for deciding what is *dead* and structurally useless for deciding what is *current*. Lexicographers lag usage by years, and the dumps lag the lexicographers. The lexicon therefore has two halves:
+
+| Half | Source | Answers |
+|---|---|---|
+| Historical (2003-2023) | Urban Dictionary dump, 55,499 terms after filtering | "is this term dead?" |
+| Contemporary (2024-2026) | **Discovered from the corpus** (§5.9a) | "is this term current?" |
+
+This is a better design than the original plan, not a workaround: corpus discovery measures actual usage rather than what someone bothered to write a definition for.
+
+### 1.4a Measured lexicon build [V]
+
+Running `pipelines/00_build_lexicon.py`:
+
+```
+152,941 definitions -> 55,499 unique terms  (63.7% removed as junk/low-score/merged)
++ 1,322 new terms from MLBtrio curated seeds (457 already present)
+= 56,821 terms
+```
+
+The 63.7% removal rate is the `score > 0` filter plus the proper-noun and name-definition filters doing exactly what §1.4 predicted (~40% noise, plus per-term aggregation of multiple definitions).
+
 **Quality caveat [V]:** Urban Dictionary is heavily polluted. Sample rows include `"Wet pickle": "It's you lily. You're a wet pickle."` (score -1) and many "[Name] is the sweetest girl you'll ever meet" entries. **Filter on `score > 0` and drop single-proper-noun entries**, or ~40% of the lexicon is noise [E].
 
 ---
@@ -879,6 +908,40 @@ This is the piece the whole project turns on.
 4. **Eval generation** — `status=dead` terms become the outdated-slang test (§14.13).
 
 **Never normalise slang to standard English.** Obvious, but half of all text-normalisation tooling does it by default.
+
+## 5.9a Emerging-term discovery -- where *current* slang actually comes from
+
+Because the dictionary stops in 2023 (§1.4), current slang is found by contrast against the corpus instead. A token is emerging slang when it is:
+
+1. **frequent** in the recent slice (>= 2 occurrences per million tokens), and
+2. **absent** from a standard English vocabulary (`wordfreq` top-50k), and
+3. **unknown** to the historical lexicon.
+
+Semantic drift on an existing term (`mid`, `cooked` acquiring pejorative senses) is handled by a fourth rule: a known English word qualifies only if it is *already in the lexicon* with a documented slang sense **and** its rate has grown >= 3x against an older baseline.
+
+### Two failure modes found by running it [V]
+
+Both are recorded here because both look like success until you read the output.
+
+**(a) Discovery on raw text returns markup, not language.** First run's top "emerging slang" was:
+
+```
+https  3166/M   png  713/M   webp  489/M   redd  499/M   width  509/M   preview  505/M
+```
+
+These are URL and image-CDN fragments. **Cleaning must precede counting** -- §5.14 step ordering is not cosmetic. `bussin/data/clean.py::content_words` also maintains an explicit `MARKUP_NOISE` set for the artefacts that survive URL stripping.
+
+**(b) An un-topic-matched baseline measures topic, not time.** After cleaning, the top of the list became ordinary English with large growth ratios:
+
+```
+anyone 1579/M (3.3x)   currently 486/M (5.6x)   wondering 478/M (6.2x)   team 424/M (4.5x)
+```
+
+Nothing about those words changed. What changed was the *subreddit mix*: the recent slice is an all-of-Reddit scrape and the baseline was three named subreddits (`gaming`, `Showerthoughts`, `relationship_advice`), so the ratio measured topic distribution.
+
+**Fix [R]:** never accept a growth signal for a word that has no documented slang sense. Either topic-match the two slices (same subreddits, different time windows) or restrict the growth path to terms already in the lexicon. Bussin does the latter, because topic-matched slices are not available for the 2024-2026 window.
+
+**(c) Unicode apostrophes fragment contractions.** `don`, `didn`, `doesn` appeared as emerging vocabulary because phone keyboards emit U+2019, not ASCII `'`, and the word regex split on it. `clean.py::UNICODE_PUNCT` normalises quotes and dashes before tokenization.
 
 ## 5.10 Profanity handling
 
