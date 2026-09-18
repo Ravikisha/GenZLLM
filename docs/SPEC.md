@@ -63,7 +63,7 @@ Every factual claim carries a marker. Nothing is asserted without one.
 
 There is no Gen-Z pretraining corpus. It does not exist. Therefore Bussin cannot be built by "finding the Gen-Z dataset" — the register must be **mined** out of large authentic social corpora that do exist (Reddit, Twitch, Discord, YouTube comments), using a **date-stamped slang lexicon** as the filter signal.
 
-**The second finding.** Kaggle grants **30 GPU-hours/week and, on a separate quota, 20 TPU v3-8 hours/week** [V]. TPU v3-8 is roughly 4x the effective throughput of T4x2 [C/E]. This single fact is what moves a 1B model from "undertrained toy" to "genuinely trained", on one account, legally.
+**The second finding.** Kaggle grants **30 GPU-hours/week and, on a separate quota, 20 TPU v3-8 hours/week** [V, confirmed on the project account 2026-09-18]. TPU v3-8 is roughly 4x the effective throughput of T4x2 [C/E]. This single fact is what moves a 1B model from "undertrained toy" to "genuinely trained", on one account, legally.
 
 **The third finding.** Neither the Tesla P100 nor the Tesla T4 supports bfloat16 [V] — bf16 tensor cores begin at Ampere. This dictates fp32 master weights with fp16+GradScaler on GPU and bf16 on TPU, and it is the most common cause of silent divergence in from-scratch runs on free hardware.
 
@@ -92,7 +92,7 @@ There is no Gen-Z pretraining corpus. It does not exist. Therefore Bussin cannot
 
 | Dataset | Rows **[V]** | Bytes **[V]** | Format | Genuine or synthetic | License | Verdict |
 |---|---:|---:|---|---|---|---|
-| [`MLBtrio/genz-slang-dataset`](https://huggingface.co/datasets/MLBtrio/genz-slang-dataset) | 1,779 | 235 KB | `Slang, Description, Example, Context` | **Synthetic** (LLM-authored definitions) | none declared | **USE — as lexicon seed only** |
+| [`MLBtrio/genz-slang-dataset`](https://huggingface.co/datasets/MLBtrio/genz-slang-dataset) | 1,779 | 235 KB | `Slang, Description, Example, Context` | **Synthetic** (LLM-authored definitions) | none declared | **USE — as lexicon seed only, and see the correction below** |
 | [`Smilyai-labs/Sam-genz-omni`](https://huggingface.co/datasets/Smilyai-labs/Sam-genz-omni) | 31,377 | 5.4 MB | `prompt, response` | Synthetic | none declared | Weak. SFT candidate only |
 | [`biropost/genz_preference`](https://huggingface.co/datasets/biropost/genz_preference) | 3,911 | 587 KB | DPO `chosen/rejected` + register control tokens | Synthetic | none declared | **Study the design, don't train on it** (see note) |
 | [`Programmer-RD-AI/genz-slang-pairs-1k`](https://huggingface.co/datasets/Programmer-RD-AI/genz-slang-pairs-1k) | 1,005 | 109 KB | pairs | Synthetic | none declared | Redundant |
@@ -118,6 +118,18 @@ These are not independent datasets. I confirmed by comparing actual rows:
 - `ai-maker-space/gen-z-translation` (105 rows, 7,485 bytes) and `mrCarl0/genZ_data` (105 rows, **7,485 bytes** — byte-identical)
 
 > **Note on `biropost/genz_preference`:** its design is the most interesting thing in this category — it conditions generations on explicit register control tokens `<<SLANG:3>> <<EMOJI:0>> <<HYPE:1>> <<FORMAL:0>>`. Bussin adopts and automates this idea (§3.4, §15). **But do not train on the data**: inspecting rows surfaced a `chosen` completion containing an ethnic-slur-adjacent token. It is unfiltered LLM output. Take the schema, not the rows.
+
+### Correction from implementation (measured 2026-09-18) [V]
+
+`MLBtrio` is the only usable entry in this category, and the spec above treated it as uniformly contemporary curated slang. **It is not.**
+
+Of its 1,322 entries that survive lexicon filtering, roughly **a third are AIM/SMS-era initialisms**, verified by inspection: `nifoc` ("Naked in front of computer"), `aamof` ("As a matter of fact"), `g2g`, `suyf`, `wrud`, `oic`, `l33t`, `aisb`, `ayt`, `ianac`, `bm&y`.
+
+The other **~460 are genuinely current**: `glow up`, `rent free`, `hits different`, `periodt`, `understood the assignment`, `clapback`, `i oop`, `ok boomer`, `big yikes`, `catch these hands`, `take several seats`, `main character`, `it's giving…`, `no cap`, `cheugy`, `e-boy`.
+
+**Term shape does not separate the two classes** — `rizz`, `fam`, `stan` and `w` are all short and consonant-heavy but entirely contemporary. What separates them is that an initialism's definition is its own expansion, so the filter checks whether the initial letters of the definition's words reproduce the term (`is_initialism()` in `pipelines/05_build_bussbench.py`).
+
+**Consequence [R]:** there is currently **no reliable source of contemporary-slang ground truth in this project**. The Urban Dictionary dump stops in 2023 (§1.4), UD score selects 2003-2011 entries, and the curated set is a mix. Corpus re-attestation (§5.9a) is therefore not polish — it is the only mechanism that can establish what is current, and everything downstream that depends on `status == "current"` is provisional until it runs.
 
 ### 1.1 Verdict
 
@@ -1487,10 +1499,15 @@ All from the official Kaggle documentation pages, read directly [V]:
 | Interactive idle timeout | 20 min (notebooks doc) / 60 min (efficient-GPU doc) — **docs disagree; assume 20** | both |
 | **Weekly GPU quota** | **"30 hours or sometimes higher depending on demand"** | `kaggle.com/docs/efficient-gpu-usage` |
 | Quota reset | Weekly, Saturday 00:00 UTC | Kaggle discussions [E] |
-| **Weekly TPU quota** | **~20 h/week, separate from GPU** | Kaggle discussions [E] — **verify in your settings** |
-| Private dataset limit | 200 GB | Kaggle product announcement [E] |
+| **Weekly TPU quota** | **20 h/week, separate from GPU** | **[V] confirmed on the project account's settings page, 2026-09-18: `Kaggle TPU 00:00 / 20 hrs`** |
+| Private dataset limit | **214.75 GB** (200 GiB), same for private models | **[V] confirmed on the account settings page, 2026-09-18** |
 | Concurrent batch CPU sessions | **5** | Kaggle discussions [E] |
 | Colab Pro linkage | +15 h (Pro) / +30 h (Pro+) | `kaggle.com/docs/notebooks` — **costs money, excluded** |
+
+| **Free AI-model inference credits** | **$10/day, $100/month** | **[V] account settings page, 2026-09-18: `Daily AI Models $0.00 / $10.00`, `Monthly AI Models $0.00 / $100.00`** |
+| Phone verification | Required before accelerators are granted | [V] account settings page |
+
+> **[R] The inference credits change the instruction-tuning plan (§12.3).** $100/month of free model inference is enough to generate the standard-English paraphrase side of the ~24,000 translation pairs without paying for an API. It does **not** change the rule that the Gen-Z side must be authentic mined text (§13.2) -- the credits buy the safe direction only.
 
 **Official efficiency guidance, quoted [V]:**
 > *"Avoid using batch sessions (the commit button) to save or checkpoint your progress."*
@@ -2129,7 +2146,7 @@ Compute is given in units of the ~1.15e19 FLOPs/week available from one Kaggle a
 | **Objective** | Lock the spec; verify every assumption in your own accounts |
 | **Deliverables** | This document; Kaggle/Colab/Lightning/HF accounts with verified quotas; repo scaffold; `bussin` package skeleton |
 | **Compute** | ~0 |
-| **Risks** | TPU quota differs from [E]; TPU v3-8 unavailable in your region |
+| **Risks** | ~~TPU quota differs from [E]~~ **resolved: confirmed 20 h/week on the account**; TPU v3-8 unavailable in your region at session time |
 | **Success test** | A trivial notebook runs on Kaggle T4 x2 **and** TPU v3-8 and prints device info; quota page screenshotted |
 
 ## Phase 1 — Data (3-4 weeks, CPU only)
