@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import re
 import sys
 from collections import Counter
 from dataclasses import dataclass
@@ -43,6 +44,7 @@ DROP_COLUMNS = {
     "author", "author_fullname", "author_flair_text", "permalink", "id",
     "subreddit_id", "link_id", "parent_id", "name", "CommentID", "VideoID",
     "VideoTitle", "user", "username", "user_id", "channel_id", "server_id",
+    "AuthorName", "AuthorChannelID", "author_name", "display_name",
 }
 
 
@@ -66,7 +68,8 @@ SOURCES: list[Source] = [
     Source("wenknow/reddit_dataset_232", "train", "genz", 0.015),
     Source("lparkourer10/twitch_chat", "train", "genz", 0.008),
     Source("llmtraining-scraper/discord-messages", "train", "genz", 0.008),
-    Source("AmaanP314/youtube-comment-sentiment", "train", "genz", 0.004),
+    Source("AmaanP314/youtube-comment-sentiment", "train", "genz", 0.004,
+           text_key="CommentText"),
     # --- internet broad ---
     Source("HuggingFaceGECLM/REDDIT_comments", "gaming", "internet", 0.020),
     Source("HuggingFaceGECLM/REDDIT_comments", "relationship_advice", "internet", 0.017),
@@ -94,7 +97,8 @@ SOURCES: list[Source] = [
 ]
 
 TEXT_KEYS = ("text", "body", "content", "Message", "message", "comment",
-             "Comment", "definition", "hi_ng", "output")
+             "Comment", "CommentText", "comment_text", "definition", "hi_ng",
+             "output", "tweet", "post", "selftext", "review")
 
 
 class Deduper:
@@ -204,10 +208,34 @@ def extract(row: dict, src: Source | None = None) -> str:
                 if isinstance(inner, str) and len(inner) > 20:
                     return inner
 
+    # Last resort. It must reject identifiers, or a schema whose text column is
+    # not in TEXT_KEYS silently yields IDs instead: the YouTube set has its text
+    # in `CommentText`, so this fallback returned `CommentID` and put 2,782
+    # documents of "UgyRjrEdJIPrf68uND14AaABAg" into the corpus.
     for v in row.values():
-        if isinstance(v, str) and len(v) > 20:
-            return v
+        if not isinstance(v, str) or len(v) <= 20:
+            continue
+        if " " not in v.strip():
+            continue            # no spaces -> an identifier, hash or URL
+        if _looks_like_id(v):
+            continue
+        return v
     return ""
+
+
+_ID_LIKE = re.compile(r"^[A-Za-z0-9_\-]{16,}$")
+
+
+def _looks_like_id(v: str) -> bool:
+    s = v.strip()
+    if _ID_LIKE.match(s):
+        return True
+    # High digit+case-mixing density with no spaces is an identifier.
+    alnum = [c for c in s if c.isalnum()]
+    if not alnum:
+        return False
+    mixed = sum(1 for c in alnum if c.isdigit()) / len(alnum)
+    return " " not in s and mixed > 0.15
 
 
 def is_human_annotated(row: dict) -> bool:

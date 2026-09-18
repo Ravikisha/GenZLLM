@@ -78,24 +78,55 @@ def spearman(a: list[float], b: list[float]) -> float:
     return num / (da * db) if da and db else float("nan")
 
 
+# Stratify by SOURCE, never by the annotator's own output.
+#
+# The first calibration attempt sampled equally from each of the annotator's
+# slang buckets, which is circular: when the annotator was broken its "slang_4"
+# bucket was full of router posts, so the strata were random with respect to
+# real slang and the test could not have worked.
+#
+# Source is independent evidence. fineweb-edu is edited prose, Twitch and
+# Discord are chat. That gives the scale genuine range regardless of what the
+# annotator currently believes.
+SOURCE_STRATA = {
+    "formal":  ["fineweb-edu", "smollm-corpus", "cosmopedia"],
+    "prose":   ["REDDIT_comments"],
+    "social":  ["reddit_dataset_157", "reddit_dataset_232", "reddit_dataset_94",
+                "youtube-comment-sentiment"],
+    "chat":    ["twitch_chat", "discord-messages"],
+}
+
+
+def _stratum(source: str) -> str | None:
+    tail = (source or "").split("/")[-1]
+    for name, members in SOURCE_STRATA.items():
+        if tail in members:
+            return name
+    return None
+
+
 def cmd_emit(args) -> int:
     lex = Lexicon.load(args.lexicon) if Path(args.lexicon).exists() else None
     ann = RegisterAnnotator(lex)
 
-    buckets: dict[int, list[dict]] = defaultdict(list)
+    buckets: dict[str, list[dict]] = defaultdict(list)
     for doc in iter_docs(Path(args.corpus)):
         text = doc.get("text", "")
         if not (40 <= len(text) <= 600):
             continue
+        stratum = _stratum(doc.get("source", ""))
+        if stratum is None:
+            continue
         reg = ann.annotate(text)
-        buckets[reg.slang].append({"text": text, "pool": doc.get("pool"),
-                                   "slang": reg.slang})
+        buckets[stratum].append({"text": text, "pool": doc.get("pool"),
+                                 "source": doc.get("source"),
+                                 "stratum": stratum, "slang": reg.slang})
 
     rng = random.Random(args.seed)
-    per = max(args.n // 5, 1)
+    per = max(args.n // len(SOURCE_STRATA), 1)
     sample: list[dict] = []
-    for b in range(5):
-        pool = buckets.get(b, [])
+    for name in SOURCE_STRATA:
+        pool = buckets.get(name, [])
         rng.shuffle(pool)
         sample.extend(pool[:per])
     rng.shuffle(sample)
@@ -106,15 +137,14 @@ def cmd_emit(args) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(sample, indent=1, ensure_ascii=False), encoding="utf-8")
 
-    print(f"# {len(sample)} documents, stratified across annotator slang buckets")
-    print(f"# rate each 0-4 for SLANG DENSITY only")
+    print(f"# {len(sample)} documents, stratified by SOURCE (not by annotator output)")
+    print("# rate each 0-4 for SLANG DENSITY only -- not emoji, not abbreviations")
     print("#   0 none   1 a trace   2 noticeable   3 heavy   4 saturated")
-    print(f"# annotator scores are hidden; written to {out}\n")
+    print(f"# annotator scores hidden; written to {out}\n")
     for s in sample:
-        text = " ".join(s["text"].split())[:args.width]
-        print(f"[{s['id']:02d}] {text}")
-    counts = {b: len(buckets.get(b, [])) for b in range(5)}
-    print(f"\n# corpus bucket sizes (annotator): {counts}")
+        print(f"[{s['id']:02d}] {' '.join(s['text'].split())[:args.width]}")
+    print(f"\n# available per stratum: "
+          f"{ {k: len(v) for k, v in buckets.items()} }")
     return 0
 
 
