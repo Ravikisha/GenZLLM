@@ -131,10 +131,12 @@ def main() -> int:
     for k, v in sorted(report.items()):
         print(f"  {k:<32} {v:.4f}")
 
-    ok, failures = check_gate(report)
+    ok, failures, warnings = check_gate(report, sample_bytes=total)
     print(f"\n  gate: {'PASS' if ok else 'FAIL'}")
     for f in failures:
-        print(f"    - {f}")
+        print(f"    FAIL  {f}")
+    for w in warnings:
+        print(f"    warn  {w}")
     if not ok:
         print("\n  Do not tokenize the full corpus until the gate passes.")
     Path(args.out).with_name("tokenizer_report.json").write_text(

@@ -17,6 +17,7 @@ import json
 import os
 import random
 import shutil
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -155,11 +156,50 @@ def save_checkpoint(
     }
     (tmp / "MANIFEST.sha256").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
-    # Atomic promote: a half-written checkpoint must never be loadable.
-    if out.exists():
-        shutil.rmtree(out)
-    os.replace(tmp, out)
+    _atomic_promote(tmp, out)
     return out
+
+
+def _atomic_promote(tmp: Path, out: Path, attempts: int = 6) -> None:
+    """Move a finished checkpoint directory into place.
+
+    A half-written checkpoint must never be loadable, so the write goes to a
+    temporary directory and is promoted only once complete.
+
+    Windows makes this awkward: directory deletion is not synchronous, and
+    `os.replace` refuses a destination that still exists, so a promote issued
+    immediately after `rmtree` fails with `WinError 5: Access is denied`. It
+    also fails if any file in the tree still has an open handle (an indexer or
+    antivirus scanner is enough).
+
+    So: retry with backoff, and if the rename still will not go through, fall
+    back to moving the old directory aside first. `MANIFEST.sha256` is written
+    last inside `tmp`, so even a worst-case partial state fails
+    `verify_checkpoint` rather than loading silently.
+    """
+    last: Exception | None = None
+    for i in range(attempts):
+        try:
+            if out.exists():
+                shutil.rmtree(out, ignore_errors=True)
+            os.replace(tmp, out)
+            return
+        except OSError as exc:
+            last = exc
+            time.sleep(0.25 * (2**i))
+
+    # Last resort: park the old directory under a unique name and retry once.
+    if out.exists():
+        parked = out.with_name(f"{out.name}.old-{int(time.time())}")
+        try:
+            os.replace(out, parked)
+            os.replace(tmp, out)
+            shutil.rmtree(parked, ignore_errors=True)
+            return
+        except OSError as exc:
+            last = exc
+
+    raise RuntimeError(f"could not promote checkpoint {tmp} -> {out}: {last}")
 
 
 def verify_checkpoint(ckpt_dir: str | Path) -> bool:

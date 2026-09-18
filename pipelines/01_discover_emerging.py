@@ -64,7 +64,18 @@ BASELINE_SPLITS = ["gaming", "Showerthoughts", "relationship_advice"]
 TEXT_KEYS = ("text", "body", "content", "Message", "message", "comment")
 COMMUNITY_KEYS = ("communityName", "label", "subreddit", "community")
 
-MIN_COMMUNITY_ROWS = 8      # below this the mean register is noise
+# Minimum rows before a community's mean register is trustworthy.
+#
+# Measured at --rank-rows 30000: communities were landing 8-19 rows each, and
+# the top of the ranking filled with r/chemhelp, r/soda and r/catpreparation --
+# small-sample noise, not Gen-Z. The ordering was still directionally right
+# (r/worldnews and r/israelpalestine ranked lowest, as news and politics write
+# formally), but individual placements were not.
+#
+# The Bittensor scrapes have a very long tail, so getting a useful number of
+# rows per community needs a large ranking pass: budget --rank-rows 500000 or
+# more on a Kaggle CPU session, where it costs no GPU quota.
+MIN_COMMUNITY_ROWS = 40
 
 
 def extract_text(row: dict) -> str:

@@ -16,3 +16,7 @@ checkpoints/
 .ckpt_local/
 .ckpt_cache/
 tokenizer/
+.smoke_run/
+.relay_e2e/
+*.log
+data/_raw/

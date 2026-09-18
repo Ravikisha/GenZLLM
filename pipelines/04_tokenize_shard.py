@@ -64,21 +64,44 @@ def bucket_by_pool(paths: list[Path]) -> dict[str, list[dict]]:
     return pools
 
 
+# Where leftover documents go when a stage could not absorb them. Keeps the
+# curriculum's intent: general English early, Gen-Z late.
+LEFTOVER_STAGE = {"general": "S1", "internet": "S2", "hinglish": "S2",
+                  "lexicon": "S2", "genz": "S3"}
+
+
 def stage_documents(pools: dict[str, list[dict]], stage: str,
-                    budget_docs: int) -> list[dict]:
-    """Draw documents for one stage according to its mixture."""
+                    budget_docs: int) -> tuple[list[dict], dict[str, tuple[int, int]]]:
+    """Draw documents for one stage according to its mixture.
+
+    Returns the documents plus a per-pool (wanted, got) report. The two differ
+    whenever the corpus is not mixed in the proportions the curriculum assumes,
+    and silently dropping the difference wastes most of a small corpus -- an
+    early smoke run used 5,236 of 20,501 documents because `general` was 5.6%
+    of the corpus while S1 wanted 66.7% of everything to come from it.
+    """
     mix = STAGE_MIX[stage]
     out: list[dict] = []
+    report: dict[str, tuple[int, int]] = {}
     for pool, share in mix.items():
         available = pools.get(pool, [])
-        if not available:
-            continue
         want = int(budget_docs * share)
         take = available[:want]
-        # Leave the remainder for later stages rather than reusing documents.
-        pools[pool] = available[want:]
+        pools[pool] = available[want:]   # remainder stays for later stages
+        report[pool] = (want, len(take))
         out.extend(take)
-    return out
+    return out, report
+
+
+def drain_leftovers(pools: dict[str, list[dict]]) -> dict[str, list[dict]]:
+    """Assign every unconsumed document to its natural stage."""
+    by_stage: dict[str, list[dict]] = {}
+    for pool, rows in pools.items():
+        if not rows:
+            continue
+        by_stage.setdefault(LEFTOVER_STAGE.get(pool, "S2"), []).extend(rows)
+        pools[pool] = []
+    return by_stage
 
 
 def main() -> int:
@@ -124,10 +147,37 @@ def main() -> int:
     register_hist: Counter = Counter()
 
     stages = ["S1", "S2", "S3"] if args.split == "train" else ["S1"]
+
+    # Plan every stage before tokenizing anything, so a corpus whose pool
+    # proportions do not match the curriculum shows up as a visible shortfall
+    # rather than as silently discarded data.
+    planned: dict[str, list[dict]] = {}
+    if args.split == "train":
+        print("\n=== curriculum supply vs demand ===")
+        for stage in stages:
+            budget = int(total_docs * STAGE_SHARE.get(stage, 1.0))
+            docs, report = stage_documents(pools, stage, budget)
+            planned[stage] = docs
+            print(f"  {stage}: wanted {budget:,}, got {len(docs):,}")
+            for pool, (want, got) in sorted(report.items()):
+                if got < want:
+                    print(f"      {pool:<10} short by {want - got:,} "
+                          f"(wanted {want:,}, had {got:,})")
+        leftovers = drain_leftovers(pools)
+        if leftovers:
+            print("\n  reassigning unconsumed documents to their natural stage:")
+            for stage, rows in sorted(leftovers.items()):
+                print(f"      {len(rows):,} -> {stage}")
+                planned.setdefault(stage, []).extend(rows)
+    else:
+        planned["S1"] = [d for rows in pools.values() for d in rows]
+
+    placed = sum(len(v) for v in planned.values())
+    if placed != total_docs:
+        print(f"\n  WARNING: {total_docs - placed:,} documents unplaced")
+
     for stage in stages:
-        budget = int(total_docs * STAGE_SHARE.get(stage, 1.0))
-        docs = stage_documents(pools, stage, budget) if args.split == "train" \
-            else [d for rows in pools.values() for d in rows]
+        docs = planned.get(stage, [])
         if not docs:
             print(f"\n  {stage}: no documents available, skipping")
             continue

@@ -66,14 +66,41 @@ eval/BUSSBENCH/       held-out benchmark, never touched by training
 | Phase | State |
 |---|---|
 | 0 — Research & spec | **done** — `docs/SPEC.md` |
-| 1 — Data pipeline | next |
-| 2 — Tokenizer | — |
-| 3 — `bussin-125m` prototype + relay resume test | — |
+| 1 — Data pipeline | **built and run at small scale**; full corpus build pending |
+| 2 — Tokenizer | **built, gate passing** |
+| 3 — Relay + trainer | **built and verified** (see below); `bussin-125m` run pending real compute |
 | 4 — `bussin-400m` | — |
-| 5 — `bussin-1b` (conditional) | — |
+| 5 — `bussin-1b` (conditional on TPU) | — |
 | 6 — Instruction tuning | — |
-| 7 — BUSSBENCH | — |
+| 7 — BUSSBENCH | metrics built (`bussin/eval/metrics.py`); benchmark items pending |
 | 8 — Deployment | — |
+
+### Verified locally
+
+| Check | Result |
+|---|---|
+| Parameter counts, analytic vs built | exact match at all four sizes |
+| Untrained cross-entropy | 10.95 ≈ ln(49152) = 10.80 |
+| Document mask | exactly block-diagonal causal; no cross-document leakage |
+| **Resume determinism** (`scripts/resume_test.py`) | **0.0 relative divergence** — interrupted run reproduces uninterrupted bit-identically |
+| **Lease / compare-and-swap** (`scripts/lease_test.py`) | **15/15**, including the two-worker race |
+| **Two-session relay** (`scripts/relay_e2e_test.py`) | hand-off works; continuity probe 4.4% drift; session efficiency 0.99 |
+| Tokenizer gate | PASS — roundtrip 1.0000, 3.37 bytes/token on Gen-Z |
+| Lexicon build | 152,941 UD definitions → 55,499 terms + 1,322 curated |
+| Corpus mining | 20,501 documents, register spread across all five slang buckets |
+
+## Running it
+
+```bash
+python pipelines/00_build_lexicon.py --out data/lexicon/lexicon.jsonl
+python pipelines/01_discover_emerging.py --rank-rows 500000   # needs a big pass
+python pipelines/02_mine_corpus.py --target-tokens 7_000_000_000 --shard-index 0 --n-shards 5
+python pipelines/03_train_tokenizer.py --vocab-size 49152     # gate must pass first
+python pipelines/04_tokenize_shard.py --split train
+python -m bussin.relay.bootstrap configs/400m.yaml            # a relay worker
+```
+
+Tests: `python scripts/resume_test.py`, `scripts/lease_test.py`, `scripts/relay_e2e_test.py`.
 
 ## Notes on data and licensing
 

@@ -175,6 +175,20 @@ def run(config_path: str, *, dry_run: bool = False, max_steps: int | None = None
             train_seconds_before = float(loaded["meta"].get("wall_seconds", 0.0))
             recorded_loss = loaded["meta"].get("loss")
             cursor = Cursor.from_dict(loaded["data_cursor"])
+
+            # Carry the metric history forward. Without this each session starts
+            # with an empty curve, and the final checkpoint only describes the
+            # last session -- which defeats the point of keeping metrics.jsonl
+            # for curve-continuity checks across a relay of dozens of sessions.
+            prior = ckpt_dir / "metrics.jsonl"
+            if prior.exists():
+                trainer.metrics = [
+                    json.loads(line)
+                    for line in prior.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                ]
+                print(f"[bootstrap] restored {len(trainer.metrics):,} prior metric rows",
+                      flush=True)
             print(f"[bootstrap] resumed step {trainer.step} "
                   f"(written by {loaded['meta'].get('written_by')} on "
                   f"{loaded['meta'].get('platform')})", flush=True)
