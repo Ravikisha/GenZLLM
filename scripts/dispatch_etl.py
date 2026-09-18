@@ -59,7 +59,7 @@ os.chdir(WORK)
 sys.path.insert(0, CODE)
 
 subprocess.run([sys.executable, "-m", "pip", "install", "-q",
-                "wordfreq", "xxhash", "regex", "hf_transfer", "datasets"],
+                "wordfreq", "xxhash", "regex", "hf_transfer", "datasets", "py3langid"],
                check=False)
 print(f"setup {{time.time() - T0:.1f}}s", flush=True)
 
@@ -95,6 +95,21 @@ STAGES = {
                  "--communities-out", "data/lexicon/communities.json",
                  "--rank-rows", "500000", "--recent-rows", "0",
                  "--baseline-rows", "300000", "--top-communities", "400"],
+        "publish": ["data/lexicon"],
+        "needs_lexicon": True,
+    },
+    # Bounded insurance run. The full `rank` stage streams every row of three
+    # Bittensor repos and only writes output at the end, so a 12h session
+    # timeout loses everything. This one is sized to finish in ~1-2h and
+    # produces a usable communities.json on its own.
+    "rank-fast": {
+        "script": "pipelines/01_discover_emerging.py",
+        "argv": ["--lexicon", "{CODE}/data/lexicon/lexicon.jsonl",
+                 "--out", "data/lexicon/lexicon.jsonl",
+                 "--emerging-out", "data/lexicon/emerging.jsonl",
+                 "--communities-out", "data/lexicon/communities.json",
+                 "--rank-rows", "400000", "--recent-rows", "600000",
+                 "--baseline-rows", "150000", "--top-communities", "400"],
         "publish": ["data/lexicon"],
         "needs_lexicon": True,
     },
