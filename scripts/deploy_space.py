@@ -38,13 +38,25 @@ def main() -> int:
     api = HfApi(token=cfg.creds.hf_token)
     repo_id = f"{cfg.creds.hf_user}/{args.name}"
 
-    api.create_repo(repo_id=repo_id, repo_type="space", space_sdk="streamlit",
+    api.create_repo(repo_id=repo_id, repo_type="space", space_sdk="static",
                     private=args.private, exist_ok=True)
     print(f"space: https://huggingface.co/spaces/{repo_id}")
 
-    api.upload_folder(repo_id=repo_id, repo_type="space",
-                      folder_path=str(LOCAL), commit_message="deploy dashboard")
-    print(f"uploaded {len(list(LOCAL.iterdir()))} files")
+    # A static Space needs only index.html, which the orchestrator rewrites on
+    # every tick. Seed it now so the Space is live before the first tick.
+    from bussin.orchestrator.render import render
+
+    placeholder = {
+        "generated_at": "not yet", "model": {}, "live": {}, "progress": {},
+        "status": {"action": "none", "reason": "waiting for the first "
+                                               "orchestrator tick"},
+        "quota": {}, "sessions": {}, "charts": {},
+        "notes": ["This page is rewritten by the orchestrator every 15 minutes."],
+    }
+    api.upload_file(path_or_fileobj=render(placeholder).encode("utf-8"),
+                    path_in_repo="index.html", repo_id=repo_id,
+                    repo_type="space", commit_message="seed dashboard")
+    print("uploaded index.html")
 
     # The Space needs its own credentials to read a private checkpoint repo.
     for key, value in (("HF_TOKEN", cfg.creds.hf_token),

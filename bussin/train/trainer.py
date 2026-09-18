@@ -210,6 +210,15 @@ class Trainer:
         stepped = True
         if skip:
             self.optimizer.zero_grad(set_to_none=True)
+            # `scaler.update()` is mandatory even when the step is skipped.
+            # `unscale_()` marks the optimizer as unscaled for this iteration,
+            # and only `update()` clears that, so skipping without it makes the
+            # *next* step raise "unscale_() has already been called on this
+            # optimizer since the last update()". Only reachable under fp16,
+            # which is why it survived every fp32 CPU test and appeared on the
+            # first real T4 run.
+            if self.scaler is not None:
+                self.scaler.update()
             stepped = False
         elif self.scaler is not None:
             self.scaler.step(self.optimizer)

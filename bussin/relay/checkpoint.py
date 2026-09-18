@@ -26,6 +26,36 @@ import numpy as np
 import torch
 
 
+def writable_scratch(name: str = ".bussin_scratch") -> Path:
+    """A directory we can actually write to.
+
+    Workers run with their cwd inside a mounted dataset, which is a
+    **read-only** filesystem, so anything relative fails with
+    `OSError: [Errno 30] Read-only file system`.
+
+    Prefer Kaggle's unsaved scratch (~60 GB) over `/kaggle/working` (20 GB and
+    persisted as notebook output): checkpoints go straight to the Hub, so a
+    second copy inside the output quota is waste.
+    """
+    import tempfile
+
+    for base in ("/kaggle/temp", "/kaggle/tmp", "/kaggle/working", "/content",
+                 tempfile.gettempdir()):
+        p = Path(base)
+        if not p.is_dir():
+            continue
+        try:
+            target = p / name
+            target.mkdir(parents=True, exist_ok=True)
+            probe = target / ".write_probe"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink()
+            return target
+        except OSError:
+            continue
+    return Path(tempfile.mkdtemp(prefix="bussin_"))
+
+
 def _sha256(path: Path, chunk: int = 1 << 20) -> str:
     h = hashlib.sha256()
     with path.open("rb") as fh:
@@ -270,12 +300,14 @@ def load_checkpoint(
 class CheckpointStore:
     """Push/pull checkpoints to a Hugging Face repo (or a local directory)."""
 
-    def __init__(self, uri: str, token: str | None = None, cache_dir: str | Path = ".ckpt_cache"):
+    def __init__(self, uri: str, token: str | None = None,
+                 cache_dir: str | Path | None = None):
         self.uri = uri
         self.is_hf = uri.startswith("hf://")
         self.repo_id = uri[len("hf://"):] if self.is_hf else None
         self.token = token or os.environ.get("HF_TOKEN")
-        self.cache_dir = Path(cache_dir)
+        self.cache_dir = (Path(cache_dir) if cache_dir
+                          else writable_scratch(".ckpt_cache"))
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         if self.is_hf:
             os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")

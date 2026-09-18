@@ -3,8 +3,8 @@ title: Bussin Training Dashboard
 emoji: 📊
 colorFrom: purple
 colorTo: blue
-sdk: streamlit
-sdk_version: 1.40.0
+sdk: gradio
+sdk_version: 4.44.0
 app_file: app.py
 pinned: false
 ---
@@ -16,6 +16,9 @@ across Kaggle/Colab/Lightning, session efficiency, and BUSSBENCH results.
 
 Reads `orchestrator/dashboard.json` from the checkpoint repo, which the
 orchestrator republishes on every tick. No server, no build step.
+
+Gradio rather than Streamlit: the Spaces API now accepts only
+`gradio | docker | static` as an SDK.
 
 ## Secrets
 

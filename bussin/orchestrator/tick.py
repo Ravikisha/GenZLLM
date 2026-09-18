@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -71,14 +72,35 @@ def save_ledger(cfg: ProjectConfig, ledger: Ledger) -> None:
 
 
 def save_dashboard(cfg: ProjectConfig, payload: dict[str, Any]) -> None:
+    """Publish the snapshot as JSON, and the rendered page to a static Space.
+
+    Static Spaces are the only kind still free (Gradio and Docker now need
+    PRO), so the page is pre-rendered here rather than fetched by a browser.
+    That also keeps the checkpoint repo private: nothing client-side ever needs
+    a token.
+    """
     from huggingface_hub import HfApi
 
-    HfApi(token=cfg.creds.hf_token).upload_file(
+    api = HfApi(token=cfg.creds.hf_token)
+    api.upload_file(
         path_or_fileobj=json.dumps(payload, indent=1).encode(),
         path_in_repo=DASHBOARD_FILE,
         repo_id=cfg.ckpt_repo,
         repo_type="model",
         commit_message="orchestrator: dashboard snapshot",
+    )
+
+    space = os.environ.get("BUSSIN_DASHBOARD_SPACE")
+    if not space:
+        return
+    from .render import render
+
+    api.upload_file(
+        path_or_fileobj=render(payload).encode("utf-8"),
+        path_in_repo="index.html",
+        repo_id=space,
+        repo_type="space",
+        commit_message=f"dashboard: step {(payload.get('live') or {}).get('step', 0)}",
     )
 
 

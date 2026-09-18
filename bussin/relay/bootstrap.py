@@ -29,7 +29,8 @@ from ..model.bussin_model import BussinForCausalLM
 from ..model.config import BussinConfig
 from ..train.schedule import Curriculum, StageSpec, build_schedule
 from ..train.trainer import DivergenceError, Precision, TrainConfig, Trainer
-from .checkpoint import CheckpointStore, checkpoint_name, load_checkpoint
+from .checkpoint import (CheckpointStore, checkpoint_name, load_checkpoint,
+                         writable_scratch)
 from .platform import BatchPlan, get_platform_info, plan_batch
 from .state import LeaseHeld, RelayState, make_backend
 from .watchdog import StopReason, Watchdog
@@ -330,7 +331,7 @@ def _persist(trainer: Trainer, relay: RelayState, dataset: PackedDataset,
              ckpt_uri: str, val_loss: float | None, is_milestone: bool,
              relay_cfg: dict, lease_s: int) -> None:
     cursor = dataset.state()
-    local = Path(".ckpt_local")
+    local = writable_scratch()
     path = trainer.save(local, cursor, val_loss, is_milestone)
     name = checkpoint_name(trainer.step)
 
