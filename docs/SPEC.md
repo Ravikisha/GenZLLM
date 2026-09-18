@@ -955,6 +955,99 @@ Nothing about those words changed. What changed was the *subreddit mix*: the rec
 
 **(c) Unicode apostrophes fragment contractions.** `don`, `didn`, `doesn` appeared as emerging vocabulary because phone keyboards emit U+2019, not ASCII `'`, and the word regex split on it. `clean.py::UNICODE_PUNCT` normalises quotes and dashes before tokenization.
 
+## 5.9b Calibrating the register annotator — what broke, measured
+
+The annotator assigns the register vector that **every** training document is
+conditioned on, so §16 Phase 1 gates it at Spearman rho >= 0.7 against a rater.
+The first run scored **rho = -0.058** — no correlation at all. Six defects, each
+found by reading the disagreements rather than by inspection [V].
+
+### 1. The lexicon matched ordinary English
+
+Urban Dictionary has joke entries for function words, so the lexicon contained
+`the`, `on`, `that`, `ever`, `was`, `so`, `we`, `2`. `slang_density` therefore
+fired on every English sentence: *"I have a FON router that I flashed DD-WRT
+on"* scored **slang_4**.
+
+The fix has to respect an asymmetry. `cap`, `bet`, `tea`, `based`, `ate`,
+`valid`, `woke`, `drag` and `camp` are ordinary English words **and** real Gen-Z
+slang with drifted senses. So:
+
+| Filter | Removes | Preserves |
+|---|---|---|
+| Closed stoplist of function words | `the`, `on`, `was` | everything else |
+| Zipf frequency >= 3.6 | `router`, `mom`, `pound`, `list` | curated terms, exempt |
+| `is_initialism()` | MLBtrio's `was`="Wait a second", `so`="Significant other", `we`="Whatever", `wrt`="With regard to" | `cap`, `bet`, `tea` — not initialisms |
+| `DRIFTED_SENSES` allowlist | — | re-adds `cooked`, `mid`, `bro`, `ate`, `cracked`, `dunked`, which the frequency filter would otherwise kill |
+
+Lexicon: **56,821 -> 27,086 terms.**
+
+### 2. Romanised-Hindi grammar counted as English slang
+
+`hai` matched **886 times** across the Hinglish pool, `bas` 253, `hoon` 218 —
+pushing **16.8%** of Hinglish documents to `slang_3/4` with no English slang in
+them. Same treatment as English: `HINDI_STOPWORDS` removes the grammar,
+content-word Hinglish slang (`yaar`, `bhai`, `jugaad`) stays.
+
+### 3. Emotes double-counted
+
+`FeelsBadMan` scored **slang_3**. Emotes already feed the `emoji` dimension, and
+Urban Dictionary also has entries for them, so they were counted twice. The
+slang dimension now excludes anything in `EMOTES` or `ABBREVS`.
+
+### 4. The calibration sample was circular
+
+The first sheet stratified by **the annotator's own slang buckets**. When the
+annotator is broken its `slang_4` bucket is full of router posts, so the strata
+are random with respect to real slang and the test cannot work.
+
+**Stratify by source instead** — `fineweb-edu` is edited prose, Twitch and
+Discord are chat. Source is independent evidence; annotator output is not.
+
+### Result on the same 48 documents, same ratings
+
+| | before | after |
+|---|---|---|
+| Spearman rho | −0.058 | **+0.301** |
+| exact agreement | 12% | **75%** |
+| within +/-1 | 46% | **94%** |
+| mean bias | +1.42 | **−0.06** |
+| formal / prose strata | — | **100% / 92%** |
+
+**Still below the 0.7 gate** [V]. The remaining shortfall is not annotator bias
+— it is that 83.3% of the corpus measures `slang_0`, so a rank correlation has
+almost no variance to work with. **A Gen-Z register annotator cannot be
+validated on a corpus containing no Gen-Z**, which makes the gate blocked on
+§5.9a rather than on the annotator.
+
+## 5.9c Corpus defects the calibration exposed
+
+Reading documents to rate them surfaced three data bugs that no aggregate
+statistic showed [V]:
+
+| Defect | Measured |
+|---|---|
+| **YouTube documents were comment IDs, not comments** — the column is `CommentText`, which was not in `TEXT_KEYS`, so a generic "first string > 20 chars" fallback returned `CommentID` | **2,782 docs, 13.6% of the corpus**, all like `UgyRjrEdJIPrf68uND14AaABAg` |
+| **Twitch chat was largely bot output** — trivia rounds, sub notifications, point tallies. The bot filter was Reddit-shaped | **22.9%** of the Twitch pool |
+| **`AuthorName` was not in the PII drop list** | `@OneWhoWandered` reaching disk |
+
+The fallback now rejects identifier-shaped strings, which prevents the whole
+class: a source whose text column is not in `TEXT_KEYS` now yields nothing
+rather than silently yielding IDs.
+
+### Pools must be labelled by measured register, not by source
+
+The `genz` pool was defined by provenance, so a Bittensor scrape counted as
+Gen-Z regardless of content. Sampling it returned *"Im a w2 employee and max out
+my 401k"*, *"Official unemployment figures for the Hawaii economy"*, and
+Tagalog. Mining now reassigns:
+
+```python
+pool = "genz" if reg.slang >= 2 else "internet"
+```
+
+Provenance selects *candidates*; measurement decides the *pool*.
+
 ## 5.10 Profanity handling
 
 **Keep it. Tag it. Do not delete it.**
