@@ -1,0 +1,50 @@
+# Smoke configuration: proves the whole chain locally on CPU in minutes.
+# Not a real model -- vocab and dimensions are tiny so a laptop can run it.
+model:
+  name: bussin-smoke
+  vocab_size: 8192
+  n_layers: 4
+  d_model: 256
+  n_heads: 4
+  n_kv_heads: 2
+  head_dim: 64
+  max_seq_len: 512
+  tie_embeddings: true
+  z_loss: 1.0e-4
+  use_document_mask: true
+
+train:
+  run_id: bussin-kaggle-smoke
+  total_steps: 400
+  global_batch_tokens: 8192
+  seq_len: 512
+  lr_max: 1.0e-3
+  lr_min: 1.0e-4
+  warmup_steps: 10
+  stable_frac: 0.85
+  weight_decay: 0.1
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  grad_clip: 1.0
+  log_every: 10
+  val_every: 50
+  val_batches: 5
+  milestone_every: 100
+  checkpoint_every_s: 120
+  heartbeat_every_s: 600
+  gradient_checkpointing: false
+  seed: 1337
+
+batch:
+  micro_batch: 4
+
+relay:
+  state_uri: hf://GodAsap/bussin-ckpt
+  ckpt_uri: hf://GodAsap/bussin-ckpt
+  keep_rolling: 2
+  lease_margin_s: 600
+
+data:
+  manifest: /kaggle/input/bussin-corpus-smoke/shards/train/manifest.json
+  val_manifest: /kaggle/input/bussin-corpus-smoke/shards/val/manifest.json
+  tokenizer: /kaggle/input/bussin-corpus-smoke/tokenizer/tokenizer.json

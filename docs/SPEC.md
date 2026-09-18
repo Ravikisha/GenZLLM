@@ -1547,6 +1547,14 @@ This alone roughly doubles effective training throughput versus the naive approa
 
 **Why Kaggle Dataset for the hot path [R]:** attached datasets are *mounted*, not downloaded. Pulling a 20 GB corpus from HF at session start costs 10-20 min of a 12 h GPU session — about 2 hours of your 30 h/week burned on I/O. Mounting costs zero. This is worth roughly 7% of your entire compute budget.
 
+> **Mount path, measured 2026-09-18 [V].** Kaggle mounts attached datasets at
+> **`/kaggle/input/datasets/<owner>/<slug>/`**, not the `/kaggle/input/<slug>/`
+> that most documentation and tutorials still show. A config hardcoding either
+> form breaks on the other, so `bussin/relay/bootstrap.py::resolve_data_path()`
+> locates the manifest by searching instead of trusting a convention. The same
+> applies to the source: the worker walks `/kaggle/input` for
+> `bussin/relay/bootstrap.py` rather than assuming where the code dataset landed.
+
 **Why your PC and Google Drive are not in the path:** all transfers are cloud-to-cloud at datacenter speed. A 70 GB corpus routed through a home connection would take days and add nothing.
 
 **Corpus storage [C]:** vocabulary 49,152 <= 65,536, so tokens are `uint16` = 2 bytes.

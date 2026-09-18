@@ -41,6 +41,40 @@ def load_config(path: str | Path) -> dict[str, Any]:
     return yaml.safe_load(Path(path).read_text(encoding="utf-8"))
 
 
+# Places a mounted dataset can appear. Kaggle moved from /kaggle/input/<slug>
+# to /kaggle/input/datasets/<owner>/<slug>, so a config that hardcodes either
+# convention breaks on the other. Rather than track which is current, resolve
+# by searching -- it costs milliseconds and survives the next change.
+_SEARCH_ROOTS = ("/kaggle/input", "/content", "/teamspace/studios", "data")
+
+
+def resolve_data_path(path: str | None, max_depth: int = 6) -> str | None:
+    """Return `path` if it exists, else find a file with the same name.
+
+    Matches on the trailing path components, so `shards/train/manifest.json`
+    will not accidentally match `shards/val/manifest.json`.
+    """
+    if not path:
+        return path
+    p = Path(path)
+    if p.exists():
+        return str(p)
+
+    parts = [x for x in p.parts if x not in ("/", "\\")]
+    tail2 = os.path.join(*parts[-3:]) if len(parts) >= 3 else p.name
+    for root in _SEARCH_ROOTS:
+        base = Path(root)
+        if not base.is_dir():
+            continue
+        for candidate in base.rglob(p.name):
+            if len(candidate.parts) - len(base.parts) > max_depth:
+                continue
+            if str(candidate).replace("\\", "/").endswith(tail2.replace("\\", "/")):
+                print(f"[bootstrap] resolved {path} -> {candidate}", flush=True)
+                return str(candidate)
+    return str(p)
+
+
 def _resolve_micro_batch(cfg: dict, info) -> int | None:
     batch = cfg.get("batch", {}) or {}
     if batch.get("micro_batch"):
@@ -197,13 +231,20 @@ def run(config_path: str, *, dry_run: bool = False, max_steps: int | None = None
 
         # data ------------------------------------------------------------
         data_cfg = cfg.get("data", {}) or {}
-        manifest = Manifest.load(data_cfg["manifest"])
+        manifest_path = resolve_data_path(data_cfg["manifest"])
+        if not manifest_path or not Path(manifest_path).exists():
+            raise SystemExit(
+                f"corpus manifest not found: {data_cfg['manifest']}. "
+                f"Attach the corpus dataset, or fix data.manifest in the config."
+            )
+        manifest = Manifest.load(manifest_path)
         dataset = PackedDataset(manifest, train_cfg.seq_len, cursor=cursor,
                                 seed=train_cfg.seed)
         loader = iter(TorchLoader(dataset, plan.micro_batch, str(device)))
 
-        if data_cfg.get("val_manifest") and Path(data_cfg["val_manifest"]).exists():
-            val_ds = PackedDataset(Manifest.load(data_cfg["val_manifest"]),
+        val_path = resolve_data_path(data_cfg.get("val_manifest"))
+        if val_path and Path(val_path).exists():
+            val_ds = PackedDataset(Manifest.load(val_path),
                                    train_cfg.seq_len, shuffle_shards=False,
                                    seed=train_cfg.seed)
             val_loader = iter(TorchLoader(val_ds, plan.micro_batch, str(device)))

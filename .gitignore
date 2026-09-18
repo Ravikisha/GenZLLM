@@ -20,3 +20,12 @@ tokenizer/
 .relay_e2e/
 *.log
 data/_raw/
+
+# --- secrets: never commit ---
+.env
+.env.*
+!.env.example
+kaggle.json
+*.pem
+*credentials*.json
+.secrets/

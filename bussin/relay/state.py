@@ -132,14 +132,16 @@ class HFBackend:
             path_in_repo=STATE_FILE,
             path_or_fileobj=json.dumps(state, indent=2).encode(),
         )
+        # `lease` is None after release(), so this cannot assume a dict.
+        lease = state.get("lease") or {}
+        who = lease.get("worker_id", "released")
         try:
             info = self.api.create_commit(
                 repo_id=self.repo_id,
                 repo_type=self.repo_type,
                 revision=self.revision,
                 operations=[op],
-                commit_message=f"relay: step {state.get('step')} "
-                               f"by {state.get('lease', {}).get('worker_id')}",
+                commit_message=f"relay: step {state.get('step')} by {who}",
                 parent_commit=parent_revision,
             )
         except HfHubHTTPError as exc:
