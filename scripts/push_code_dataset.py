@@ -31,10 +31,12 @@ from bussin.config import project
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# Only the code and configs. No data, no checkpoints, no secrets.
-INCLUDE = ["bussin", "configs"]
+# Code, configs, pipelines, and the lexicon -- the ETL stages need all four,
+# and the lexicon is small enough (~10 MB) to ship rather than mount separately.
+INCLUDE = ["bussin", "configs", "pipelines", "scripts", "data/lexicon"]
 EXCLUDE_NAMES = {"__pycache__", ".pytest_cache", ".ipynb_checkpoints"}
 EXCLUDE_SUFFIXES = {".pyc", ".pyo", ".log", ".bin", ".idx", ".safetensors", ".pt"}
+EXCLUDE_DIRS = {"data/_raw", "data/corpus", "data/shards", "data/audit"}
 # Belt and braces: these must never leave the machine.
 FORBIDDEN = {".env", "kaggle.json", "access_token", ".env.local"}
 

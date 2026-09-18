@@ -57,19 +57,24 @@ class Source:
     config: str | None = None     # HF dataset config, where the repo needs one
     text_key: str | None = None   # explicit column, incl. "a.b" for nested
     prefer_human: bool = False    # findnitai carries source=1 for human-annotated
+    by_community: bool = False    # keep only high-register communities
+    reassign_pool: bool = False   # label the pool by measured register, not source
 
 
 # Weights follow the 400m mixture in SPEC §4.4, flattened across stages.
 # Stage assignment happens later, at shard-ordering time.
 SOURCES: list[Source] = [
     # --- Gen-Z core (the scarce pool: only ~3.3B tokens exist in total) ---
-    Source("tensorshield/reddit_dataset_157", "train", "genz", 0.040),
-    Source("coldmind/reddit_dataset_94", "train", "genz", 0.020),
-    Source("wenknow/reddit_dataset_232", "train", "genz", 0.015),
+    Source("tensorshield/reddit_dataset_157", "train", "genz", 0.040,
+           by_community=True, reassign_pool=True),
+    Source("coldmind/reddit_dataset_94", "train", "genz", 0.020,
+           by_community=True, reassign_pool=True),
+    Source("wenknow/reddit_dataset_232", "train", "genz", 0.015,
+           by_community=True, reassign_pool=True),
     Source("lparkourer10/twitch_chat", "train", "genz", 0.008),
     Source("llmtraining-scraper/discord-messages", "train", "genz", 0.008),
     Source("AmaanP314/youtube-comment-sentiment", "train", "genz", 0.004,
-           text_key="CommentText"),
+           text_key="CommentText", reassign_pool=True),
     # --- internet broad ---
     Source("HuggingFaceGECLM/REDDIT_comments", "gaming", "internet", 0.020),
     Source("HuggingFaceGECLM/REDDIT_comments", "relationship_advice", "internet", 0.017),
@@ -174,6 +179,32 @@ def stream_source(src: Source, max_rows: int | None, shard_index: int,
         i += 1
 
 
+COMMUNITY_KEYS = ("communityName", "label", "subreddit", "community")
+
+# A document only counts as `genz` if it *measures* as Gen-Z. Labelling by
+# source put "Im a w2 employee and max out my 401k" in the genz pool, because
+# it came from a scrape tagged genz -- the Bittensor sets are an unweighted
+# long tail of all of Reddit, not a Gen-Z corpus.
+REASSIGN_MIN_SLANG = 2
+
+
+def extract_community(row: dict) -> str:
+    for k in COMMUNITY_KEYS:
+        v = row.get(k)
+        if isinstance(v, str) and v:
+            return v.lower().lstrip("r/").strip("/")
+    return ""
+
+
+def load_communities(path: str | Path, top_k: int = 400) -> set[str]:
+    """High-register communities, as ranked by the register annotator itself."""
+    p = Path(path)
+    if not p.exists():
+        return set()
+    rows = json.loads(p.read_text(encoding="utf-8"))
+    return {r["community"] for r in rows[:top_k]}
+
+
 def _dig(row: dict, path: str):
     """Follow a dotted path, so 'translation.hi_ng' reaches a nested column."""
     cur = row
@@ -259,6 +290,9 @@ def main() -> int:
     ap.add_argument("--val-fraction", type=float, default=0.002)
     ap.add_argument("--docs-per-file", type=int, default=100_000)
     ap.add_argument("--only-pool", default=None, help="genz|internet|general|hinglish")
+    ap.add_argument("--communities", default="data/lexicon/communities.json",
+                    help="ranked communities from pipelines/01")
+    ap.add_argument("--top-communities", type=int, default=400)
     args = ap.parse_args()
 
     out = Path(args.out)
@@ -270,6 +304,14 @@ def main() -> int:
         print(f"WARNING: no lexicon at {args.lexicon}; slang dimension will be 0")
     annotator = RegisterAnnotator(lex)
     deduper = Deduper()
+
+    communities = load_communities(args.communities, args.top_communities)
+    if communities:
+        print(f"community filter: {len(communities):,} high-register communities")
+    else:
+        print(f"WARNING: no communities at {args.communities}. Social sources "
+              f"will not be filtered, so the genz pool will be the unweighted "
+              f"long tail of Reddit. Run pipelines/01 first.")
 
     sources = [s for s in SOURCES if not args.only_pool or s.pool == args.only_pool]
     total_weight = sum(s.weight for s in sources)
@@ -299,6 +341,10 @@ def main() -> int:
                 if src.prefer_human and not is_human_annotated(row):
                     stats["drop:synthetic_flagged"] += 1
                     continue
+                if src.by_community and communities:
+                    if extract_community(row) not in communities:
+                        stats["drop:low_register_community"] += 1
+                        continue
                 res = clean_text(extract(row, src), cfg, author=row.get("author"),
                                  pool=src.pool)
                 if not res.ok:
@@ -315,10 +361,17 @@ def main() -> int:
 
                 reg = annotator.annotate(res.text)
                 register_hist[f"slang_{reg.slang}"] += 1
+
+                pool = res.pool
+                if src.reassign_pool and pool != "hinglish":
+                    # Measured register decides the pool, not provenance.
+                    pool = "genz" if reg.slang >= REASSIGN_MIN_SLANG else "internet"
+                    stats[f"pool:{pool}"] += 1
+
                 record = {
                     "text": res.text,
                     "register": reg.to_dict(),
-                    "pool": res.pool,
+                    "pool": pool,
                     "source": src.repo,
                     "n_words": res.n_words,
                 }
@@ -328,7 +381,7 @@ def main() -> int:
 
                 approx_tokens = int(res.n_words * 1.35)   # words -> BPE tokens
                 got += approx_tokens
-                pool_tokens[res.pool] += approx_tokens
+                pool_tokens[pool] += approx_tokens
                 stats["kept"] += 1
 
                 if got >= budget:
