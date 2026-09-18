@@ -75,6 +75,25 @@ eval/BUSSBENCH/       held-out benchmark, never touched by training
 | 7 — BUSSBENCH | metrics built (`bussin/eval/metrics.py`); benchmark items pending |
 | 8 — Deployment | — |
 
+### Verified on real Kaggle hardware
+
+A full cycle ran on Kaggle T4 x2 and completed: trained 400 steps, checkpointed
+to Hugging Face, released the lease, exited clean.
+
+| Check | Result |
+|---|---|
+| Hardware detection | `2x Tesla T4 (cuda) \| bf16=False` — exactly as the spec predicted |
+| Precision selection | `fp16 (scaler=on)` chosen automatically (Turing has no bf16) |
+| Batch-plan invariant | `micro 4 x accum 2 x 2 dev` reproducing the global batch exactly |
+| Measured throughput | **160,936 tok/s** (4.87 TFLOP/s effective on the 5M smoke model) |
+| Checkpoint to HF | `ckpt-00000400` — model, optimizer, scheduler, scaler, RNG, cursor, manifest |
+| Lease from Kaggle | claimed and released against the live Hub |
+| Dashboard | published to a static Space, HTTP 200 |
+
+The throughput figure is a **floor, not an estimate for `bussin-400m`**: a 5M
+model at sequence length 512 is overhead-bound. SPEC §9.6's 24-36 TFLOP/s for
+T4 x2 still needs measuring with the real config.
+
 ### Verified locally
 
 | Check | Result |
@@ -88,6 +107,27 @@ eval/BUSSBENCH/       held-out benchmark, never touched by training
 | Tokenizer gate | PASS — roundtrip 1.0000, 3.37 bytes/token on Gen-Z |
 | Lexicon build | 152,941 UD definitions → 55,499 terms + 1,322 curated |
 | Corpus mining | 20,501 documents, register spread across all five slang buckets |
+
+## Automated operation
+
+An orchestrator tick decides whether to start a session somewhere and then
+exits. It is stateless: every tick re-reads run state, lease and quota from
+Hugging Face, so a missed tick or a crashed runner resolves itself.
+
+```bash
+python -m bussin.orchestrator.tick --config configs/400m.yaml --status   # inspect
+python -m bussin.orchestrator.tick --config configs/400m.yaml            # dispatch
+```
+
+`.github/workflows/orchestrator.yml` runs it every 15 minutes on GitHub Actions
+(~960 of the 2,000 free minutes/month; unlimited if the repo is public).
+"Stop when quotas are exhausted, resume next week" needs no code — ticks exit
+in two seconds until the reset boundary.
+
+Dashboard: a **pre-rendered static page** pushed to a free HF Space on every
+tick. HF now returns `402 Payment Required` for Gradio and Docker Spaces on
+free CPU; only static Spaces are free. Rendering server-side also keeps the
+checkpoint repo private, since the browser never needs a token.
 
 ## Running it
 
