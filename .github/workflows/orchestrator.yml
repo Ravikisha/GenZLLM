@@ -46,11 +46,12 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
+          cache-dependency-path: requirements-orchestrator.txt
 
       - name: Install
         run: |
           python -m pip install -q --upgrade pip
-          python -m pip install -q huggingface_hub kaggle pyyaml regex hf_transfer
+          python -m pip install -q -r requirements-orchestrator.txt
 
       - name: Tick
         env:
@@ -58,7 +59,9 @@ jobs:
           HF_USER: ${{ secrets.HF_USER }}
           KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
           KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
-          HF_HUB_ENABLE_HF_TRANSFER: "1"
+          # hf_transfer is retired; current huggingface_hub warns on the old
+          # variable and uses Xet for fast transfers instead.
+          HF_XET_HIGH_PERFORMANCE: "1"
           HF_HUB_DISABLE_SYMLINKS_WARNING: "1"
         run: |
           python -m bussin.orchestrator.tick \

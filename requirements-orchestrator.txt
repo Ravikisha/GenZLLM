@@ -1,0 +1,13 @@
+# Dependencies for the orchestrator tick that runs in GitHub Actions.
+#
+# Deliberately NOT the training dependencies: a tick only reads run state and
+# quota from Hugging Face and dispatches a session, so it must not drag torch
+# onto the runner every 15 minutes.
+#
+# This file is also what `actions/setup-python` caches against -- with
+# `cache: pip` and no dependency file anywhere in the repo, setup-python fails
+# the job before any Python runs.
+
+huggingface_hub>=0.24
+kaggle>=1.6
+PyYAML>=6.0
