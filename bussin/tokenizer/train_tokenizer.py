@@ -298,11 +298,20 @@ def check_gate(
 ) -> tuple[bool, list[str], list[str]]:
     """Returns (passed, failures, warnings).
 
-    `roundtrip` and `forced_single_token_rate` are scale-independent and are
-    always enforced. The compression targets are only meaningful once the
-    tokenizer has seen a realistic amount of text, so below
-    MIN_MEANINGFUL_SAMPLE_BYTES they are reported as warnings instead of
-    failures -- otherwise every smoke run looks like a broken tokenizer.
+    `roundtrip` is the only scale-independent target and is always enforced:
+    a tokenizer that cannot reproduce its input is broken at any size.
+
+    Everything else -- the compression targets and
+    `forced_single_token_rate` -- is only meaningful once the tokenizer has
+    seen a realistic amount of text and has a realistic vocabulary to spend, so
+    below MIN_MEANINGFUL_SAMPLE_BYTES they are reported as warnings rather than
+    failures; otherwise every smoke run looks like a broken tokenizer. A real
+    run is above the threshold, where they are enforced as failures.
+
+    `forced_single_token_rate` in particular is bounded by vocab size, not by
+    sample size: a 16k-vocab smoke run cannot seat 5k forced terms however much
+    text it sees. It is the production vocabulary that makes the target
+    reachable.
     """
     scale_free = {"roundtrip"}
     undersized = sample_bytes is not None and sample_bytes < MIN_MEANINGFUL_SAMPLE_BYTES
