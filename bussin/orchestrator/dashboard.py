@@ -95,7 +95,7 @@ def _plan_from_config(config_path: str) -> dict[str, Any]:
     }
 
 
-ETL_STAGES = ("mine-0", "mine-1", "mine-2", "rank-fast", "tokenize")
+ETL_PREFIX = "bussin-etl-"
 
 
 def _data_pipeline(cfg: ProjectConfig) -> dict[str, Any]:
@@ -114,13 +114,21 @@ def _data_pipeline(cfg: ProjectConfig) -> dict[str, Any]:
 
         api = KaggleApi()
         api.authenticate()
-        for stage in ETL_STAGES:
-            slug = f"{cfg.creds.kaggle_username}/bussin-etl-{stage}"
+        # Discovered, not hardcoded: stage names change as the pipeline is
+        # reshaped, and a fixed list silently stops reporting the jobs that
+        # are actually running.
+        for k in api.kernels_list(user=cfg.creds.kaggle_username, page_size=50):
+            ref = str(getattr(k, "ref", ""))
+            name = ref.split("/")[-1]
+            if not name.startswith(ETL_PREFIX):
+                continue
             try:
-                st = str(getattr(api.kernels_status(slug), "status", "?"))
-                out["etl"].append({"stage": stage, "status": st.split(".")[-1]})
+                st = str(getattr(api.kernels_status(ref), "status", "?"))
             except Exception:
                 continue
+            out["etl"].append({"stage": name[len(ETL_PREFIX):],
+                               "status": st.split(".")[-1]})
+        out["etl"].sort(key=lambda e: e["stage"])
     except Exception as exc:
         out["etl_error"] = f"{type(exc).__name__}: {str(exc)[:100]}"
 
