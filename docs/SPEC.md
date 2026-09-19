@@ -1048,6 +1048,89 @@ pool = "genz" if reg.slang >= 2 else "internet"
 
 Provenance selects *candidates*; measurement decides the *pool*.
 
+## 5.9d Second calibration round — the annotator was measuring length
+
+Re-running the gate on the re-mined corpus scored **rho = -0.011** on 80
+documents, *worse* than the +0.301 of §5.9b. The disagreements were not noise;
+they were one mechanism, and two lexicon faults behind it [V].
+
+### 1. Rates divided by document length, so short messages saturated
+
+`slang_density = 100 * weighted_hits / n_tokens`. A chat message is ~10 tokens,
+so **one** lexicon hit scored a density of 10 and landed in the top bucket:
+
+| Document | n_tokens | auto | rated |
+|---|---|---|---|
+| `Kantaper kantaper kantaper, Bla bla bla!` | 9 | **4** | 0 |
+| `I got 140 on tank, 100 on dps, and 50 on supp` | 14 | **4** | 0 |
+| `doors complete just gotta add handles and script the doors` | 10 | **4** | 1 |
+
+This is what made the corpus bimodal — long documents at `slang_0`, any short
+message containing one term at `slang_4`, nothing in between — and it means the
+dimension was substantially measuring **document length**, not register. All
+rate dimensions now divide by `max(n_tokens, MIN_RATE_TOKENS)` with
+`MIN_RATE_TOKENS = 30`: a short document is weak evidence, not intense
+evidence, and reaching `slang_4` requires several hits rather than one.
+
+### 2. The curated frequency exemption was unbounded
+
+The curated set is deliberately exempt from the common-word filter — that is
+how `cap`, `bet` and `tea` survive — but the exemption was gated only at
+`zipf >= 6.0`, which also admitted **`add` (5.09), `mom` (5.1), `tank` (4.6),
+`camp` (4.8), `lab` (4.4)** as Gen-Z slang, plus a long tail of chat
+typography (`<3`, `w/`, `*s*`, `b&`, `^5`, `t:)t`). 135 curated single-word
+terms sat above the frequency floor.
+
+Frequency alone cannot separate `bet` from `add`. The exemption is now an
+explicit allowlist: a common word is admitted **only with a documented drifted
+sense**, and `DRIFTED_SENSES` was extended to carry the real ones. A structural
+filter (`^[a-z][a-z0-9'-]*$`) removes the typography, which is punctuation art
+rather than vocabulary.
+
+### 3. Weighting by recency inverted the signal
+
+Match weight was `recency_weight` alone, a 3-year half-life on the Urban
+Dictionary first-attestation date. So **`tripping` weighed 0.005** while junk
+injected through the curated path weighed **0.85** — the lexicon weighted terms
+by how recently a dictionary noticed them, not by whether they are in use.
+Corpus attestation is the stronger evidence and was already measured by
+`refine_status_from_corpus`; recency now only modulates within a status:
+
+```python
+STATUS_BASE = {"current": 1.0, "aging": 0.5, "dead": 0.0}
+weight = STATUS_BASE[status] * (0.5 + 0.5 * recency_weight)
+```
+
+### Result on the same 80 documents, same ratings
+
+| | before | after |
+|---|---|---|
+| Spearman rho | −0.011 | +0.077 |
+| exact agreement | 61.3% | **71.2%** |
+| within +/-1 | 87.5% | **96.2%** |
+| mean bias | +0.28 | **0.00** |
+| spurious `slang_3`/`slang_4` | 7 | **0** |
+
+Scoring now **re-annotates the sheet** rather than trusting the value stored at
+emit time, so the annotator can be changed and re-measured against a fixed
+human judgement without re-rating anything.
+
+**rho remains uninformative, and this is a property of the sample, not the
+annotator** [V]. 67 of 80 rated documents are `slang_0`, because the sample was
+drawn from the unfiltered corpus, whose social and chat strata contain very
+little slang. A rank correlation over data that is 84% ties cannot reach 0.70
+whatever the annotator does. Re-mining with the community filter moves the
+register distribution from 88.7% `slang_0` to a **61/16/15/6/2%** gradient, and
+the gate is only meaningful once measured there.
+
+### The gitignore defect
+
+`data/` was unanchored, so it matched the source package `bussin/data/` as well
+as the artefact directory it was written for. **The annotator, lexicon and
+cleaning code were never in the repository** — nor was `bussin/tokenizer/`, via
+`tokenizer/`. Root-anchored now (`/data/`, `/tokenizer/`).
+
+
 ## 5.10 Profanity handling
 
 **Keep it. Tag it. Do not delete it.**
