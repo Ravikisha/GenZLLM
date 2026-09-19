@@ -95,6 +95,54 @@ def _plan_from_config(config_path: str) -> dict[str, Any]:
     }
 
 
+ETL_STAGES = ("mine-0", "mine-1", "mine-2", "rank-fast", "tokenize")
+
+
+def _data_pipeline(cfg: ProjectConfig) -> dict[str, Any]:
+    """What the CPU side is doing.
+
+    Before training starts this is the only thing happening, and none of the
+    training panels can show it: the corpus is built by Kaggle CPU kernels that
+    consume no GPU quota and therefore never touch the ledger. Every lookup is
+    best-effort -- the dashboard must never be the reason a tick fails.
+    """
+    out: dict[str, Any] = {"etl": [], "corpus": None}
+
+    try:
+        cfg.creds.export_kaggle()
+        from kaggle.api.kaggle_api_extended import KaggleApi
+
+        api = KaggleApi()
+        api.authenticate()
+        for stage in ETL_STAGES:
+            slug = f"{cfg.creds.kaggle_username}/bussin-etl-{stage}"
+            try:
+                st = str(getattr(api.kernels_status(slug), "status", "?"))
+                out["etl"].append({"stage": stage, "status": st.split(".")[-1]})
+            except Exception:
+                continue
+    except Exception as exc:
+        out["etl_error"] = f"{type(exc).__name__}: {str(exc)[:100]}"
+
+    try:
+        from huggingface_hub import HfApi
+
+        info = HfApi(token=cfg.creds.hf_token).repo_info(
+            cfg.corpus_repo, repo_type="dataset", files_metadata=True
+        )
+        parts = [s for s in info.siblings if s.rfilename.endswith(".jsonl.gz")]
+        out["corpus"] = {
+            "repo": cfg.corpus_repo,
+            "files": len(parts),
+            "bytes": sum(s.size or 0 for s in parts),
+            "updated": iso(info.last_modified) if info.last_modified else None,
+        }
+    except Exception as exc:
+        out["corpus_error"] = f"{type(exc).__name__}: {str(exc)[:100]}"
+
+    return out
+
+
 def build_snapshot(cfg: ProjectConfig, tick_out: dict[str, Any],
                    config_path: str = "configs/400m.yaml") -> dict[str, Any]:
     now = utcnow()
@@ -194,6 +242,7 @@ def build_snapshot(cfg: ProjectConfig, tick_out: dict[str, Any],
             "mean_efficiency": round(sum(effs) / len(effs), 3) if effs else None,
             "recent": history[-10:],
         },
+        "data_pipeline": _data_pipeline(cfg),
         # Populated by the eval harness at milestones; absent during pretraining.
         "bussbench": tick_out.get("bussbench"),
         "notes": [

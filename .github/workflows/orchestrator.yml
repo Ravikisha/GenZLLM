@@ -59,6 +59,10 @@ jobs:
           HF_USER: ${{ secrets.HF_USER }}
           KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
           KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+          # Without this the tick computes the dashboard and then drops it:
+          # save_dashboard() returns early when the target Space is unset,
+          # so the live report silently went stale.
+          BUSSIN_DASHBOARD_SPACE: ${{ vars.BUSSIN_DASHBOARD_SPACE || 'GodAsap/bussin-dashboard' }}
           # hf_transfer is retired; current huggingface_hub warns on the old
           # variable and uses Xet for fast transfers instead.
           HF_XET_HIGH_PERFORMANCE: "1"

@@ -130,6 +130,7 @@ def render(d: dict[str, Any]) -> str:
     quota = d.get("quota") or {}
     sessions = d.get("sessions") or {}
     charts = d.get("charts") or {}
+    dp = d.get("data_pipeline") or {}
 
     action = status.get("action")
     reason = status.get("reason", "")
@@ -146,6 +147,32 @@ def render(d: dict[str, Any]) -> str:
 
     tpp = prog.get("tokens_per_param") or 0
     vclass, vtext = _verdict(tpp)
+
+    _ETL_CLASS = {"RUNNING": "good", "COMPLETE": "good",
+                  "ERROR": "warn", "CANCEL_ACKNOWLEDGED": "idle"}
+    etl_rows = "".join(
+        f"<tr><td>{_esc(e.get('stage'))}</td>"
+        f"<td class=\"{_ETL_CLASS.get(e.get('status'), 'idle')}\">"
+        f"{_esc(e.get('status'))}</td></tr>"
+        for e in (dp.get("etl") or [])
+    )
+    corpus = dp.get("corpus") or {}
+    if corpus:
+        corpus_line = (
+            f"<p class=\"muted\">corpus <b>{_esc(corpus.get('repo'))}</b> &middot; "
+            f"{corpus.get('files', 0)} shards &middot; "
+            f"{(corpus.get('bytes') or 0) / 1e9:.2f} GB &middot; "
+            f"updated {_esc(corpus.get('updated'))}</p>"
+        )
+    else:
+        corpus_line = f"<p class=\"muted\">corpus: {_esc(dp.get('corpus_error', 'no data'))}</p>"
+    dp_html = (
+        "<table><tr><th>ETL stage</th><th>status</th></tr>"
+        + (etl_rows or '<tr><td colspan="2" class="muted">no ETL jobs</td></tr>')
+        + "</table>" + corpus_line
+        + "<p class=\"muted\">ETL runs on Kaggle <b>CPU</b> sessions, which "
+          "consume no GPU quota and so never appear in the ledger above.</p>"
+    )
 
     metrics = [
         ("Step", f"{live.get('step', 0):,}"),
@@ -256,6 +283,9 @@ margin. Reconcile against the settings page occasionally.</p></div>
 <tr><th>worker</th><th>platform</th><th>steps</th><th>end step</th><th>efficiency</th></tr>
 {srows or '<tr><td colspan="5" class="muted">none yet</td></tr>'}
 </table></div>
+
+<h2>Data pipeline</h2>
+<div class="card">{dp_html}</div>
 
 <h2>BUSSBENCH</h2>
 <div class="card">{bench_html}</div>
