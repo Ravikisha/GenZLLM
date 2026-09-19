@@ -153,6 +153,15 @@ def cmd_score(args) -> int:
     ratings = json.loads(Path(args.ratings).read_text(encoding="utf-8"))
     ratings = {int(k): int(v) for k, v in ratings.items()}
 
+    # Re-annotate rather than trusting the score stored at emit time. The
+    # ratings are a fixed human judgement of a fixed set of documents, so the
+    # annotator can be changed and re-measured against them without re-rating
+    # anything -- which is the only way to iterate on it honestly.
+    lex = Lexicon.load(args.lexicon) if Path(args.lexicon).exists() else None
+    ann = RegisterAnnotator(lex)
+    for doc in sheet:
+        doc["slang"] = ann.annotate(doc["text"]).slang
+
     pairs = [(s["slang"], ratings[s["id"]]) for s in sheet if s["id"] in ratings]
     if len(pairs) < 10:
         raise SystemExit(f"only {len(pairs)} rated; need at least 10")
@@ -216,6 +225,7 @@ def main() -> int:
 
     s = sub.add_parser("score")
     s.add_argument("--ratings", default="data/audit/ratings.json")
+    s.add_argument("--lexicon", default="data/lexicon/lexicon.jsonl")
     s.set_defaults(func=cmd_score)
 
     args = ap.parse_args()

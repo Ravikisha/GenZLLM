@@ -116,7 +116,14 @@ STAGES = {
     "mine": {
         "script": "pipelines/02_mine_corpus.py",
         "argv": ["--out", "data/corpus", "--target-tokens", "2000000000",
-                 "--lexicon", "{CODE}/data/lexicon/lexicon.jsonl"],
+                 "--lexicon", "{CODE}/data/lexicon/lexicon.jsonl",
+                 # Must resolve against the mount: the default is relative to
+                 # the working dir, where it does not exist, and a missing file
+                 # silently disables the filter instead of failing.
+                 "--communities", "{CODE}/data/lexicon/communities.json",
+                 # Kaggle kills a batch session at 12h. Stop at 10h so the
+                 # corpus still gets published instead of dying with rc!=0.
+                 "--deadline-seconds", "36000"],
         "publish": ["data/corpus"],
         "needs_lexicon": True,
     },
@@ -154,8 +161,10 @@ def main() -> int:
             print(f"{slug}: {type(exc).__name__}: {str(exc)[:120]}")
             return 1
         if args.log:
+            # Without a pattern this pulls every output file -- for a mine
+            # shard that is gigabytes of corpus to read one log line.
             d = tempfile.mkdtemp()
-            api.kernels_output(slug, path=d)
+            api.kernels_output(slug, path=d, file_pattern=r".*\.log$")
             for p in Path(d).rglob("*.log"):
                 text = p.read_text(encoding="utf-8", errors="replace")
                 try:

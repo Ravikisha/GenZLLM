@@ -26,6 +26,7 @@ import gzip
 import json
 import re
 import sys
+import time
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -293,6 +294,9 @@ def main() -> int:
     ap.add_argument("--communities", default="data/lexicon/communities.json",
                     help="ranked communities from pipelines/01")
     ap.add_argument("--top-communities", type=int, default=400)
+    ap.add_argument("--deadline-seconds", type=int, default=0,
+                    help="stop cleanly and still write output before the host "
+                         "kills the session (0 = no limit)")
     args = ap.parse_args()
 
     out = Path(args.out)
@@ -316,6 +320,16 @@ def main() -> int:
     sources = [s for s in SOURCES if not args.only_pool or s.pool == args.only_pool]
     total_weight = sum(s.weight for s in sources)
 
+    # Sources are mined in order, so without a clock a slow early source eats
+    # the whole session and the `general` sources at the end of the list never
+    # run at all. Worse, a host-killed session exits non-zero and publishes
+    # nothing. Each source therefore gets a share of the *remaining* time in
+    # proportion to its share of the *remaining* weight.
+    t0 = time.monotonic()
+    hard_deadline = t0 + args.deadline_seconds if args.deadline_seconds > 0 else None
+    weight_left = total_weight
+    timed_out: list[str] = []
+
     stats: Counter = Counter()
     pool_tokens: Counter = Counter()
     register_hist: Counter = Counter()
@@ -331,8 +345,20 @@ def main() -> int:
             budget = int(args.target_tokens * src.weight / total_weight)
             if budget < 1000:
                 continue
+            now = time.monotonic()
+            if hard_deadline is not None and now >= hard_deadline:
+                print("\n!! deadline reached; skipping remaining sources", flush=True)
+                timed_out.append("<remaining sources skipped>")
+                break
+            src_deadline = None
+            if hard_deadline is not None:
+                share = src.weight / weight_left if weight_left > 0 else 1.0
+                src_deadline = now + (hard_deadline - now) * share
+            weight_left -= src.weight
             print(f"\n=== {src.repo} :: {src.split}  [{src.pool}]  "
-                  f"budget {budget:,} tokens ===", flush=True)
+                  f"budget {budget:,} tokens"
+                  + (f", {(src_deadline - now) / 60:.0f} min" if src_deadline else "")
+                  + " ===", flush=True)
             cfg = CleanConfig.strict() if src.pool == "general" else CleanConfig()
             got = 0
             rows = 0
@@ -386,6 +412,12 @@ def main() -> int:
 
                 if got >= budget:
                     break
+                if src_deadline is not None and rows % 2000 == 0:
+                    if time.monotonic() >= src_deadline:
+                        print(f"    !! source deadline; {got / 1e6:.2f}M of "
+                              f"{budget / 1e6:.2f}M tokens", flush=True)
+                        timed_out.append(f"{src.repo}:{src.split}")
+                        break
                 if stats["kept"] % 20000 == 0:
                     print(f"    {rows:,} rows -> {stats['kept']:,} kept, "
                           f"{got / 1e6:.2f}M tokens", flush=True)
@@ -420,6 +452,9 @@ def main() -> int:
         "pool_tokens": dict(pool_tokens),
         "register_hist": dict(register_hist),
         "drops": {k: v for k, v in stats.items() if k.startswith("drop:")},
+        "elapsed_seconds": round(time.monotonic() - t0, 1),
+        "timed_out_sources": timed_out,
+        "community_filter": len(communities),
     }
     (out / f"mine_meta_{args.shard_index:02d}.json").write_text(
         json.dumps(meta, indent=2), encoding="utf-8"
