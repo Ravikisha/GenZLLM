@@ -7,19 +7,19 @@ venv/
 *.idx
 *.safetensors
 *.pt
-data/
-corpus/
-checkpoints/
+/data/
+/corpus/
+/checkpoints/
 .ipynb_checkpoints/
 .DS_Store
 .venv/
 .ckpt_local/
 .ckpt_cache/
-tokenizer/
+/tokenizer/
 .smoke_run/
 .relay_e2e/
 *.log
-data/_raw/
+/data/_raw/
 
 # --- secrets: never commit ---
 .env
@@ -31,4 +31,4 @@ kaggle.json
 .secrets/
 dashboard_preview.html
 # ...but keep the small, high-value derived artefacts
-!data/lexicon/communities.json
+!/data/lexicon/communities.json
