@@ -113,6 +113,29 @@ STAGES = {
         "publish": ["data/lexicon"],
         "needs_lexicon": True,
     },
+    # The scarce pool, mined on its own.
+    #
+    # In the combined run the six Gen-Z sources shared ~57 minutes of a 10h
+    # session -- their 9.5% token weight bought them 9.5% of the clock -- and
+    # every one hit its deadline, while `general` finished its 1.6B budget
+    # early. Under community filtering ~94% of Reddit rows are discarded before
+    # cleaning, so these sources need far MORE wall time per token, not less.
+    # Given a whole session each they get ~10x the clock, and `general` is not
+    # re-mined because it is already published at data/corpus.
+    "mine-genz": {
+        "script": "pipelines/02_mine_corpus.py",
+        "argv": ["--out", "data/corpus_genz", "--target-tokens", "2000000000",
+                 "--only-pool", "genz",
+                 "--lexicon", "{CODE}/data/lexicon/lexicon.jsonl",
+                 "--communities", "{CODE}/data/lexicon/communities.json",
+                 # 400 of 2,511 communities discarded 94% of rows. 900 still
+                 # excludes the low-register long tail while roughly doubling
+                 # yield, and yield is the binding constraint.
+                 "--top-communities", "900",
+                 "--deadline-seconds", "36000"],
+        "publish": ["data/corpus_genz"],
+        "needs_lexicon": True,
+    },
     "mine": {
         "script": "pipelines/02_mine_corpus.py",
         "argv": ["--out", "data/corpus", "--target-tokens", "2000000000",

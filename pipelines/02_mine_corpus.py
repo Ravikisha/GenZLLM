@@ -290,7 +290,13 @@ def main() -> int:
     ap.add_argument("--n-shards", type=int, default=1)
     ap.add_argument("--val-fraction", type=float, default=0.002)
     ap.add_argument("--docs-per-file", type=int, default=100_000)
-    ap.add_argument("--only-pool", default=None, help="genz|internet|general|hinglish")
+    ap.add_argument("--only-pool", default=None,
+                    help="comma-separated pools to mine, e.g. 'genz' or "
+                         "'general,internet,hinglish'. Mining a scarce pool on "
+                         "its own is the point: sources share the clock in "
+                         "proportion to weight, so the Gen-Z sources got ~57min "
+                         "of a 10h session and every one of them timed out "
+                         "while `general` finished its budget early.")
     ap.add_argument("--communities", default="data/lexicon/communities.json",
                     help="ranked communities from pipelines/01")
     ap.add_argument("--top-communities", type=int, default=400)
@@ -317,7 +323,11 @@ def main() -> int:
               f"will not be filtered, so the genz pool will be the unweighted "
               f"long tail of Reddit. Run pipelines/01 first.")
 
-    sources = [s for s in SOURCES if not args.only_pool or s.pool == args.only_pool]
+    wanted = {p.strip() for p in (args.only_pool or "").split(",") if p.strip()}
+    sources = [s for s in SOURCES if not wanted or s.pool in wanted]
+    if not sources:
+        raise SystemExit(f"--only-pool {args.only_pool!r} matched no sources; "
+                         f"known pools: {sorted({s.pool for s in SOURCES})}")
     total_weight = sum(s.weight for s in sources)
 
     # Sources are mined in order, so without a clock a slow early source eats
