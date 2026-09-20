@@ -402,7 +402,110 @@ DRIFTED_SENSES = {
     "high-key": "openly, emphatically",
     "e-girl": "a woman with an online-subculture aesthetic",
     "e-boy": "a man with an online-subculture aesthetic",
+    # Ordinary informal register. The lexicon is Urban-Dictionary-derived, so
+    # it carried exotic coinages while missing the common markers that
+    # actually distinguish chat from prose: "yo anyone wanna give me somethin
+    # for free haha" measured slang_0 because not one of its words was known.
+    "yo": "informal greeting or attention marker",
+    "wanna": "want to",
+    "gonna": "going to",
+    "gotta": "have got to",
+    "kinda": "kind of",
+    "sorta": "sort of",
+    "dunno": "do not know",
+    "lemme": "let me",
+    "gimme": "give me",
+    "ain't": "am not / is not / are not",
+    "dude": "term of address, regardless of gender",
+    "bruh": "term of address; also an expression of dismay",
+    "sucks": "is bad",
+    "crap": "rubbish, nonsense",
+    "prick": "an unpleasant person",
+    "nah": "no",
+    "yeah": "yes",
+    "yep": "yes",
+    "nope": "no",
+    "hella": "very",
+    "wack": "bad, objectionable",
+    "legit": "genuinely, genuine",
+    "vibe": "an atmosphere or feeling",
+    "sus": "suspicious",
+    "bail": "to leave abruptly",
+    "ghost": "to cut off contact without explanation",
+    "salty": "bitter, resentful",
+    "shady": "untrustworthy",
+    "creep": "an unsettling person",
+    "dupe": "a duplicate",
 }
+
+
+# Drifted senses whose literal reading is at least as common as the slang one.
+# A bag-of-words matcher has no way to tell "bone moist dries out when out
+# living thing" from "I'm living for this", so these count only when the
+# document already contains an unambiguous slang term. That costs a little
+# recall on documents whose ONLY slang is one ambiguous word, and removes a
+# large class of false positives on ordinary prose.
+# Current slang the dated sources cannot supply. The Urban Dictionary dump
+# ends 2023-11-09 and the curated set predates the present wave, so 29 of 62
+# core contemporary terms were absent -- including "bussin", which the project
+# is named after. A dated dictionary can say what is *dead*; it cannot say
+# what is *current*. These are unambiguous coinages, so they also serve as the
+# anchors that let AMBIGUOUS_SENSES count at full weight.
+CURRENT_SLANG = {
+    "bussin": "excellent, especially of food",
+    "gyatt": "exclamation at a large backside",
+    "sigma": "self-reliant, admirably aloof (often ironic)",
+    "skibidi": "nonsense intensifier from a viral series",
+    "fanum tax": "taking a portion of a friend's food",
+    "mewing": "tongue posture claimed to sharpen the jawline",
+    "looksmaxxing": "systematically improving one's appearance",
+    "cheugy": "out of date, trying too hard",
+    "mogging": "visibly outclassing someone in looks",
+    "glazing": "excessive, fawning praise",
+    "yap": "to talk at length about nothing",
+    "yapping": "talking at length about nothing",
+    "beige flag": "a trait that is neither good nor bad, merely odd",
+    "talking stage": "the period before a relationship is official",
+    "situationship": "an undefined romantic arrangement",
+    "periodt": "emphatic full stop to a statement",
+    "fit": "an outfit",
+    "drip": "stylish clothing",
+    "opps": "enemies, rivals",
+    "down bad": "desperate, humiliatingly infatuated",
+    "pressed": "visibly upset, bothered",
+    "chopped": "unattractive; badly done",
+    "aura": "one's presence or charisma, scored in points",
+    "locked in": "intensely focused",
+    "crashout": "a loss of emotional control",
+    "crashing out": "losing emotional control",
+    "delulu": "deluded, wishfully unrealistic",
+    "unserious": "absurd, not to be taken seriously",
+    "clapped": "unattractive, worn out",
+    "simp": "someone excessively deferential to a love interest",
+    "bop": "an excellent song",
+    "bops": "excellent songs",
+    "slaps": "is excellent, especially of music",
+    "ick": "a sudden turn-off",
+    "finna": "fixing to, about to",
+    "bouta": "about to",
+    "boutta": "about to",
+    "tryna": "trying to",
+    "deadass": "seriously, genuinely",
+}
+
+AMBIGUOUS_SENSES = {
+    # Literal sense dominates: these are ordinary words far more often than
+    # they are register markers.
+    "living", "clean", "hard", "arc", "ace", "drag", "ship", "extra",
+    "basic", "valid", "burn", "shade", "camp", "peak", "creep", "smash",
+    "eating", "cooking", "sending", "fire", "stone", "lit", "down",
+}
+
+# How much an ambiguous term counts when nothing unambiguous corroborates it.
+# Not zero: "you ate and left no crumbs" is saturated slang whose every term
+# is individually ambiguous, and gating them out scored it 0. Not one:
+# "the living room was clean" is not slang at all.
+AMBIGUOUS_UNANCHORED = 0.3
 
 
 def merge_curated(entries: list[LexEntry], curated: Iterable[dict]) -> list[LexEntry]:
@@ -624,6 +727,18 @@ class Lexicon:
                 continue
             seen.add(e.term)
             entries.append(e)
+
+        # DRIFTED_SENSES is defined in code, not in the file, so a lexicon
+        # built before a term was curated would silently omit it -- which is
+        # how "yo", "wanna" and "dude" stayed missing after being added.
+        for term, definition in {**DRIFTED_SENSES, **CURRENT_SLANG}.items():
+            if term in seen:
+                continue
+            entries.append(LexEntry(
+                term=term, first_seen="", last_seen="", n_defs=1,
+                median_score=60.0, recency_weight=0.95, status="current",
+                definition=definition, example="", source="curated",
+            ))
         return cls(entries)
 
     @staticmethod

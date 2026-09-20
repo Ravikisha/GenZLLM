@@ -24,7 +24,7 @@ from typing import Sequence
 
 import regex  # unicode property support that `re` lacks
 
-from .lexicon import Lexicon
+from .lexicon import AMBIGUOUS_SENSES, AMBIGUOUS_UNANCHORED, Lexicon
 
 # ------------------------------------------------------------------ #
 # Patterns
@@ -66,6 +66,9 @@ ABBREVS = {
     "bc", "cuz", "tho", "thru", "u", "ur", "yr", "pls", "plz", "thx", "k",
     "ppl", "ig", "dm", "rt", "tldr", "tl;dr", "xd", "bf", "gf", "bff", "dw",
     "ez", "ofc", "nsfw", "til", "eli5", "iirc", "afaik", "op", "mf",
+    # Netspeak shorthand that the lexicon was scoring as slang: "Damia, Sage
+    # of Stone (G) (SF) (txt) ^^^FAQ" -- a bot signature -- measured slang_2.
+    "txt", "faq", "pm", "dl", "ul", "src", "img", "msg", "pls", "rq",
 }
 
 # Function words that appear at high rates in edited prose and low rates in chat.
@@ -231,6 +234,10 @@ class RegisterAnnotator:
             # slang_3 despite containing no slang at all.
             hits = [(t, w) for t, w in self.lexicon.hits(words)
                     if t not in EMOTES and t not in ABBREVS]
+            # A word whose literal sense dominates is weak evidence on its
+            # own and full evidence alongside something unambiguous.
+            if not any(t not in AMBIGUOUS_SENSES for t, _ in hits):
+                hits = [(t, w * AMBIGUOUS_UNANCHORED) for t, w in hits]
             slang_density = 100.0 * sum(w for _, w in hits) / n
             slang_terms = [t for t, _ in hits][:32]
         else:

@@ -30,7 +30,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import numpy as np
 
 from bussin.data.loader import Manifest, ShardWriter
-from bussin.data.register import Register
+from bussin.data.lexicon import Lexicon
+from bussin.data.register import Register, RegisterAnnotator
 
 # Which pools feed which curriculum stage, and in what proportion.
 # Mirrors configs/*.yaml. See SPEC §4.4.
@@ -114,6 +115,11 @@ def main() -> int:
     ap.add_argument("--split", default="train", choices=["train", "val"])
     ap.add_argument("--no-register", action="store_true",
                     help="omit register control tokens (ablation only)")
+    ap.add_argument("--lexicon", default="data/lexicon/lexicon.jsonl")
+    ap.add_argument("--use-stored-register", action="store_true",
+                    help="trust the register written at mining time instead of "
+                         "recomputing it (not recommended: the corpus outlives "
+                         "the annotator that labelled it)")
     args = ap.parse_args()
 
     from tokenizers import Tokenizer
@@ -145,6 +151,10 @@ def main() -> int:
     all_shards = []
     stats: Counter = Counter()
     register_hist: Counter = Counter()
+    lex = Lexicon.load(args.lexicon) if Path(args.lexicon).exists() else None
+    if lex is None and not args.no_register:
+        print(f"WARNING: no lexicon at {args.lexicon}; slang will score 0")
+    annotator = RegisterAnnotator(lex)
 
     stages = ["S1", "S2", "S3"] if args.split == "train" else ["S1"]
 
@@ -193,8 +203,17 @@ def main() -> int:
         batch_texts, batch_size = [], 1000
         for i, doc in enumerate(docs):
             text = doc["text"]
-            if not args.no_register and doc.get("register"):
-                reg = Register(**doc["register"])
+            if not args.no_register:
+                # Recomputed by default. Mining takes ~9h and annotation
+                # ~30k docs/sec/core, so the labels stored during a mine are
+                # months older than the annotator by the time shards are
+                # built -- and the control tokens are what the model is
+                # conditioned on. Re-measuring here costs minutes and keeps
+                # the corpus and the annotator from drifting apart.
+                if args.use_stored_register and doc.get("register"):
+                    reg = Register(**doc["register"])
+                else:
+                    reg = annotator.annotate(text)
                 register_hist[f"slang_{reg.slang}"] += 1
                 text = reg.to_tokens() + text
             batch_texts.append(text)
