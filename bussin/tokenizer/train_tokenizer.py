@@ -144,8 +144,15 @@ def _forcing_documents(
     to learn it as a merge.
 
     Terms are emitted space-separated so the byte-level pre-tokenizer sees them
-    in their natural ' word' form, which is the variant that actually occurs in
-    running text.
+    in their natural ' word' form -- the variant that actually occurs in
+    running text, and the only one worth spending vocabulary on. Measured on a
+    16k-vocab run: 497/500 of the top current slang terms encode as a single
+    token in that position.
+
+    Do not also force the bare form. Under byte-level BPE "rizz" and " rizz"
+    are different tokens, so forcing both doubles the vocabulary cost of every
+    slang term -- ~6,800 of 49,152 slots -- to serve the <1% of occurrences
+    that sit at the very start of a document.
     """
     batch: list[str] = []
     for _ in range(repeats):
@@ -280,7 +287,17 @@ def evaluate_tokenizer(
     report["roundtrip"] = ok / max(len(all_texts), 1)
 
     if forced_terms:
-        single = sum(1 for t in forced_terms if len(tokenizer.encode(t).ids) == 1)
+        # Measured in running-text position, i.e. with the leading space.
+        #
+        # The bare form is a different token under byte-level BPE and occurs
+        # only at the start of a document or immediately after punctuation.
+        # Measuring it reported 0.228 while the form the model actually meets
+        # was at 0.994, and reading that as a tokenizer failure would have led
+        # to spending 14% of the vocabulary on duplicate tokens.
+        single = sum(
+            1 for t in forced_terms
+            if len(tokenizer.encode(t if t.startswith(" ") else " " + t).ids) == 1
+        )
         report["forced_single_token_rate"] = single / len(forced_terms)
 
     report["vocab_size"] = float(tokenizer.get_vocab_size())
