@@ -63,6 +63,21 @@ subprocess.run([sys.executable, "-m", "pip", "install", "-q",
                check=False)
 print(f"setup {{time.time() - T0:.1f}}s", flush=True)
 
+# Some stages consume the mined corpus, which lives on the Hub rather than in
+# the mounted dataset -- it is far too large to ship as a Kaggle dataset.
+FETCH = {fetch!r}
+if FETCH:
+    from huggingface_hub import hf_hub_download
+    for rel in FETCH:
+        dest = os.path.join(WORK, rel)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        src = hf_hub_download({repo!r}, rel, repo_type="dataset",
+                              token=os.environ["HF_TOKEN"])
+        if not os.path.exists(dest):
+            os.symlink(src, dest)
+        print(f"  fetched {{rel}} ({{os.path.getsize(dest) / 1e9:.2f}} GB)", flush=True)
+    print(f"fetch done {{time.time() - T0:.0f}}s", flush=True)
+
 # Inputs live in the read-only mounted dataset, outputs in the writable
 # working dir. "{{CODE}}" marks an argument that must resolve against the mount.
 argv = [a.replace("{{CODE}}", CODE) for a in {argv!r}]
@@ -134,6 +149,18 @@ STAGES = {
                  "--top-communities", "900",
                  "--deadline-seconds", "36000"],
         "publish": ["data/corpus_genz"],
+        "needs_lexicon": True,
+    },
+    # Tokenizer training. Reads the mined corpus from the Hub, trains the
+    # production byte-level BPE, and gates it before publishing.
+    "tokenizer": {
+        "script": "pipelines/03_train_tokenizer.py",
+        "argv": ["--corpus", "data", "--vocab-size", "49152",
+                 "--out", "tokenizer/tokenizer.json",
+                 "--lexicon", "{CODE}/data/lexicon/lexicon.jsonl"],
+        "fetch": [f"data/corpus_genz/train/part-0{i}.jsonl.gz" for i in range(5)]
+                 + ["data/corpus/train/part-00.jsonl.gz"],
+        "publish": ["tokenizer"],
         "needs_lexicon": True,
     },
     "mine": {
@@ -216,6 +243,7 @@ def main() -> int:
     try:
         (work / "worker.py").write_text(
             TEMPLATE.format(
+                fetch=spec.get("fetch", []),
                 hf_token=cfg.creds.hf_token or "",
                 code_slug=code_slug,
                 script=spec["script"],
