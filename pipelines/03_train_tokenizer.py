@@ -31,6 +31,10 @@ from bussin.tokenizer.train_tokenizer import (
     train_tokenizer,
 )
 
+# Synthetic forcing text as a share of the real sample. Set from measurement:
+# 28% gave forced rate 0.994 at 65 MB, 0.5% gave 0.870 at 3.6 GB.
+FORCING_FRACTION = 0.25
+
 # Over-weighted on purpose. See SPEC §6.4.
 TOKENIZER_MIX = {"genz": 0.35, "internet": 0.25, "general": 0.30, "hinglish": 0.07}
 
@@ -88,6 +92,8 @@ def main() -> int:
     ap.add_argument("--out", default="tokenizer/tokenizer.json")
     ap.add_argument("--max-sample-bytes", type=int, default=5_000_000_000)
     ap.add_argument("--min-frequency", type=int, default=2)
+    ap.add_argument("--forcing-repeats", type=int, default=0,
+                    help="0 = scale automatically from the corpus size")
     args = ap.parse_args()
 
     print("=== 1. sampling the tokenizer corpus (mixture-weighted) ===")
@@ -105,10 +111,23 @@ def main() -> int:
           f"(current slang + abbreviations + emotes + Hinglish + "
           f"{len(emoji_counts):,} distinct emoji seen)")
 
+    # Forcing has to scale with the corpus, because BPE picks merges by
+    # frequency. A fixed 400 occurrences per term is ~28% of a 65 MB smoke
+    # corpus (forced rate 0.994) and a rounding error against 3.6 GB
+    # (forced rate 0.870) -- the merges simply lose to real text.
+    avg_len = sum(len(t) for t in forced) / max(len(forced), 1) + 1
+    repeats = args.forcing_repeats or max(
+        400, int(total * FORCING_FRACTION / (len(forced) * avg_len))
+    )
+    print(f"  forcing {repeats:,} repeats/term "
+          f"(~{repeats * len(forced) * avg_len / 1e6:.0f} MB synthetic, "
+          f"{100 * repeats * len(forced) * avg_len / total:.0f}% of corpus)")
+
     print("\n=== 3. training BPE ===")
     tok = train_tokenizer(
         corpus=iter(texts), vocab_size=args.vocab_size, out_path=args.out,
         forced_tokens=forced, min_frequency=args.min_frequency,
+        forcing_repeats=repeats,
     )
 
     print("\n=== 4. gate (SPEC §6.8) ===")
