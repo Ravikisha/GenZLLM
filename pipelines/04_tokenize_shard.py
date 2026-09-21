@@ -21,6 +21,7 @@ import argparse
 import gzip
 import json
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 from typing import Iterator
@@ -134,11 +135,18 @@ def main() -> int:
     ap.add_argument("--no-register", action="store_true",
                     help="omit register control tokens (ablation only)")
     ap.add_argument("--lexicon", default="data/lexicon/lexicon.jsonl")
+    ap.add_argument("--deadline-seconds", type=int, default=0,
+                    help="stop cleanly, close the shards and write the "
+                         "manifest before the host kills the session "
+                         "(0 = no limit). A killed session exits non-zero and "
+                         "publishes nothing, losing the entire run rather "
+                         "than degrading it.")
     ap.add_argument("--use-stored-register", action="store_true",
                     help="trust the register written at mining time instead of "
                          "recomputing it (not recommended: the corpus outlives "
                          "the annotator that labelled it)")
     args = ap.parse_args()
+    t0 = time.monotonic()
 
     from tokenizers import Tokenizer
 
@@ -252,7 +260,14 @@ def main() -> int:
             flush(stage)
             if stats["docs"] % 500_000 < BATCH:
                 print(f"    {stats['docs']:,} docs, "
-                      f"{stats['tokens'] / 1e6:.1f}M tokens", flush=True)
+                      f"{stats['tokens'] / 1e6:.1f}M tokens, "
+                      f"{(time.monotonic() - t0) / 60:.0f} min", flush=True)
+            if args.deadline_seconds and time.monotonic() - t0 >= args.deadline_seconds:
+                # Partial shards are useful; a killed session is not.
+                print(f"\n!! deadline reached after {stats['docs']:,} of "
+                      f"{total_docs:,} documents -- closing shards", flush=True)
+                stats["deadline_hit"] = 1
+                break
 
     for stage in list(writers):
         flush(stage)
@@ -269,6 +284,9 @@ def main() -> int:
     manifest.save(manifest_path)
 
     print("\n=== summary ===")
+    if stats.get("deadline_hit"):
+        print(f"  PARTIAL: stopped at the deadline; "
+              f"{total_docs - stats['docs']:,} documents not tokenized")
     print(f"  documents          {stats['docs']:,}")
     print(f"  tokens             {stats['tokens']:,}  ({stats['tokens'] / 1e9:.3f}B)")
     print(f"  shards             {len(all_shards)}")
