@@ -58,51 +58,69 @@ def iter_jsonl(paths: list[Path]) -> Iterator[dict]:
                         continue
 
 
-def bucket_by_pool(paths: list[Path]) -> dict[str, list[dict]]:
-    pools: dict[str, list[dict]] = {}
+def count_pools(paths: list[Path]) -> tuple[Counter, "array"]:
+    """First streaming pass: how many documents per pool, and each document's
+    pool in stream order.
+
+    Deliberately does NOT hold the documents. The corpus is ~52M documents and
+    the general pool is long-form, so materialising them to plan the curriculum
+    needed tens of gigabytes and could not run on any free CPU session. Only
+    the pool code is retained -- one byte per document, ~52 MB -- which is
+    enough to plan exactly, and the text is re-streamed in the second pass.
+    """
+    from array import array
+
+    counts: Counter = Counter()
+    codes = array("B")
+    order: dict[str, int] = {}
     for row in iter_jsonl(paths):
-        pools.setdefault(row.get("pool", "internet"), []).append(row)
-    return pools
+        pool = row.get("pool", "internet")
+        if pool not in order:
+            order[pool] = len(order)
+        counts[pool] += 1
+        codes.append(order[pool])
+    counts.pool_order = order        # type: ignore[attr-defined]
+    return counts, codes
+
+
+def plan_stages(counts: Counter, stages: list[str]
+                ) -> tuple[dict[str, dict[str, int]], dict[str, dict[str, tuple[int, int]]]]:
+    """Turn per-pool counts into a per-stage, per-pool quota.
+
+    Same policy as before, expressed as numbers rather than slices: draw each
+    stage's mixture, then give every unconsumed document to its natural stage
+    so a corpus that is not mixed in the curriculum's proportions is used
+    rather than discarded.
+    """
+    remaining = dict(counts)
+    total_docs = sum(counts.values())
+    quota: dict[str, dict[str, int]] = {st: {} for st in stages}
+    report: dict[str, dict[str, tuple[int, int]]] = {st: {} for st in stages}
+
+    for stage in stages:
+        budget = int(total_docs * STAGE_SHARE.get(stage, 1.0))
+        for pool, share in STAGE_MIX[stage].items():
+            want = int(budget * share)
+            got = min(want, remaining.get(pool, 0))
+            if got:
+                quota[stage][pool] = quota[stage].get(pool, 0) + got
+                remaining[pool] -= got
+            report[stage][pool] = (want, got)
+
+    for pool, left in remaining.items():
+        if left <= 0:
+            continue
+        stage = LEFTOVER_STAGE.get(pool, "S2")
+        if stage not in quota:
+            stage = stages[-1]
+        quota[stage][pool] = quota[stage].get(pool, 0) + left
+    return quota, report
 
 
 # Where leftover documents go when a stage could not absorb them. Keeps the
 # curriculum's intent: general English early, Gen-Z late.
 LEFTOVER_STAGE = {"general": "S1", "internet": "S2", "hinglish": "S2",
                   "lexicon": "S2", "genz": "S3"}
-
-
-def stage_documents(pools: dict[str, list[dict]], stage: str,
-                    budget_docs: int) -> tuple[list[dict], dict[str, tuple[int, int]]]:
-    """Draw documents for one stage according to its mixture.
-
-    Returns the documents plus a per-pool (wanted, got) report. The two differ
-    whenever the corpus is not mixed in the proportions the curriculum assumes,
-    and silently dropping the difference wastes most of a small corpus -- an
-    early smoke run used 5,236 of 20,501 documents because `general` was 5.6%
-    of the corpus while S1 wanted 66.7% of everything to come from it.
-    """
-    mix = STAGE_MIX[stage]
-    out: list[dict] = []
-    report: dict[str, tuple[int, int]] = {}
-    for pool, share in mix.items():
-        available = pools.get(pool, [])
-        want = int(budget_docs * share)
-        take = available[:want]
-        pools[pool] = available[want:]   # remainder stays for later stages
-        report[pool] = (want, len(take))
-        out.extend(take)
-    return out, report
-
-
-def drain_leftovers(pools: dict[str, list[dict]]) -> dict[str, list[dict]]:
-    """Assign every unconsumed document to its natural stage."""
-    by_stage: dict[str, list[dict]] = {}
-    for pool, rows in pools.items():
-        if not rows:
-            continue
-        by_stage.setdefault(LEFTOVER_STAGE.get(pool, "S2"), []).extend(rows)
-        pools[pool] = []
-    return by_stage
 
 
 def main() -> int:
@@ -139,11 +157,12 @@ def main() -> int:
         raise SystemExit(f"no jsonl under {src}")
     print(f"reading {len(paths)} file(s) from {src}")
 
-    print("\n=== bucketing by pool ===")
-    pools = bucket_by_pool(paths)
-    for pool, rows in sorted(pools.items(), key=lambda kv: -len(kv[1])):
-        print(f"  {pool:<10} {len(rows):>9,} documents")
-    total_docs = sum(len(v) for v in pools.values())
+    print("\n=== pass 1: counting pools ===")
+    counts, codes = count_pools(paths)
+    for pool, n in counts.most_common():
+        print(f"  {pool:<10} {n:>10,} documents")
+    total_docs = sum(counts.values())
+    print(f"  {total_docs:,} documents, {len(codes) / 1e6:.0f} MB of pool codes")
 
     out_dir = Path(args.out) / args.split
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -158,81 +177,91 @@ def main() -> int:
 
     stages = ["S1", "S2", "S3"] if args.split == "train" else ["S1"]
 
-    # Plan every stage before tokenizing anything, so a corpus whose pool
-    # proportions do not match the curriculum shows up as a visible shortfall
-    # rather than as silently discarded data.
-    planned: dict[str, list[dict]] = {}
     if args.split == "train":
         print("\n=== curriculum supply vs demand ===")
+        quota, report = plan_stages(counts, stages)
         for stage in stages:
-            budget = int(total_docs * STAGE_SHARE.get(stage, 1.0))
-            docs, report = stage_documents(pools, stage, budget)
-            planned[stage] = docs
-            print(f"  {stage}: wanted {budget:,}, got {len(docs):,}")
-            for pool, (want, got) in sorted(report.items()):
+            print(f"  {stage}: {sum(quota[stage].values()):,} documents")
+            for pool, (want, got) in sorted(report[stage].items()):
                 if got < want:
                     print(f"      {pool:<10} short by {want - got:,} "
                           f"(wanted {want:,}, had {got:,})")
-        leftovers = drain_leftovers(pools)
-        if leftovers:
-            print("\n  reassigning unconsumed documents to their natural stage:")
-            for stage, rows in sorted(leftovers.items()):
-                print(f"      {len(rows):,} -> {stage}")
-                planned.setdefault(stage, []).extend(rows)
     else:
-        planned["S1"] = [d for rows in pools.values() for d in rows]
+        quota = {"S1": dict(counts)}
 
-    placed = sum(len(v) for v in planned.values())
+    placed = sum(sum(q.values()) for q in quota.values())
     if placed != total_docs:
         print(f"\n  WARNING: {total_docs - placed:,} documents unplaced")
 
-    for stage in stages:
-        docs = planned.get(stage, [])
-        if not docs:
-            print(f"\n  {stage}: no documents available, skipping")
+    # NOTE: the S3 "oldest first" ordering of SPEC 11.1 is NOT applied here.
+    # It sorted on `created_utc`, which the miner does not carry, so every key
+    # was 0 and the sort has always been a no-op. Restoring it needs a
+    # timestamp threaded through mining. Recording the gap rather than
+    # pretending the ordering happens.
+
+    pool_order = counts.pool_order          # type: ignore[attr-defined]
+    code_to_pool = {v: k for k, v in pool_order.items()}
+    writers = {
+        stage: ShardWriter(out_dir, args.shard_tokens,
+                           prefix=f"{args.split}_{stage}", stage=stage)
+        for stage in stages if sum(quota.get(stage, {}).values()) > 0
+    }
+    # Consumed as the second pass runs: a document goes to the first stage
+    # that still wants its pool.
+    left = {st: dict(q) for st, q in quota.items()}
+
+    print("\n=== pass 2: tokenizing ===")
+    batch: dict[str, list[str]] = {st: [] for st in writers}
+    BATCH = 1000
+
+    def flush(stage: str) -> None:
+        texts = batch[stage]
+        if not texts:
+            return
+        for enc in tok.encode_batch(texts):
+            ids = enc.ids + [eos_id]
+            writers[stage].add(ids)
+            stats["tokens"] += len(ids)
+        stats["docs"] += len(texts)
+        batch[stage] = []
+
+    for i, row in enumerate(iter_jsonl(paths)):
+        pool = code_to_pool.get(codes[i], "internet") if i < len(codes) else "internet"
+        stage = next((st for st in stages
+                      if left.get(st, {}).get(pool, 0) > 0), None)
+        if stage is None or stage not in writers:
+            stats["unplaced"] += 1
             continue
+        left[stage][pool] -= 1
 
-        # Within the anneal, oldest first so the freshest language lands last.
-        if stage == "S3":
-            docs.sort(key=lambda d: d.get("created_utc", 0) or 0)
+        text = row["text"]
+        if not args.no_register:
+            # Recomputed by default. Mining takes ~9h and annotation runs at
+            # ~30k docs/sec/core, so labels stored during a mine are older
+            # than the annotator by the time shards are built -- and the
+            # control tokens are what the model is conditioned on.
+            if args.use_stored_register and row.get("register"):
+                reg = Register(**row["register"])
+            else:
+                reg = annotator.annotate(text)
+            register_hist[f"slang_{reg.slang}"] += 1
+            text = reg.to_tokens() + text
 
-        print(f"\n=== {stage}: {len(docs):,} documents ===")
-        writer = ShardWriter(out_dir, args.shard_tokens,
-                             prefix=f"{args.split}_{stage}", stage=stage)
+        batch[stage].append(text)
+        if len(batch[stage]) >= BATCH:
+            flush(stage)
+            if stats["docs"] % 500_000 < BATCH:
+                print(f"    {stats['docs']:,} docs, "
+                      f"{stats['tokens'] / 1e6:.1f}M tokens", flush=True)
 
-        batch_texts, batch_size = [], 1000
-        for i, doc in enumerate(docs):
-            text = doc["text"]
-            if not args.no_register:
-                # Recomputed by default. Mining takes ~9h and annotation
-                # ~30k docs/sec/core, so the labels stored during a mine are
-                # months older than the annotator by the time shards are
-                # built -- and the control tokens are what the model is
-                # conditioned on. Re-measuring here costs minutes and keeps
-                # the corpus and the annotator from drifting apart.
-                if args.use_stored_register and doc.get("register"):
-                    reg = Register(**doc["register"])
-                else:
-                    reg = annotator.annotate(text)
-                register_hist[f"slang_{reg.slang}"] += 1
-                text = reg.to_tokens() + text
-            batch_texts.append(text)
+    for stage in list(writers):
+        flush(stage)
 
-            if len(batch_texts) >= batch_size or i == len(docs) - 1:
-                for enc in tok.encode_batch(batch_texts):
-                    ids = enc.ids + [eos_id]
-                    writer.add(ids)
-                    stats["tokens"] += len(ids)
-                stats["docs"] += len(batch_texts)
-                batch_texts = []
-                if stats["docs"] % 100_000 < batch_size:
-                    print(f"    {stats['docs']:,} docs, "
-                          f"{stats['tokens'] / 1e6:.1f}M tokens", flush=True)
-
+    for stage, writer in writers.items():
         shards = writer.close()
         all_shards.extend(shards)
-        print(f"  {len(shards)} shard(s), "
-              f"{sum(s.n_tokens for s in shards) / 1e6:.2f}M tokens")
+        print(f"  {stage}: {len(shards)} shard(s), "
+              f"{sum(sh.n_tokens for sh in shards) / 1e6:.2f}M tokens")
 
     manifest = Manifest(all_shards, root=out_dir, seq_len=args.seq_len,
                         vocab_size=vocab_size)

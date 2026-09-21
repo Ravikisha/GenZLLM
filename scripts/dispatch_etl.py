@@ -68,14 +68,15 @@ print(f"setup {{time.time() - T0:.1f}}s", flush=True)
 FETCH = {fetch!r}
 if FETCH:
     from huggingface_hub import hf_hub_download
-    for rel in FETCH:
-        dest = os.path.join(WORK, rel)
+    for rel, dst in FETCH:
+        dest = os.path.join(WORK, dst)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         src = hf_hub_download({repo!r}, rel, repo_type="dataset",
                               token=os.environ["HF_TOKEN"])
         if not os.path.exists(dest):
             os.symlink(src, dest)
-        print(f"  fetched {{rel}} ({{os.path.getsize(dest) / 1e9:.2f}} GB)", flush=True)
+        print(f"  fetched {{rel}} -> {{dst}} "
+              f"({{os.path.getsize(dest) / 1e9:.2f}} GB)", flush=True)
     print(f"fetch done {{time.time() - T0:.0f}}s", flush=True)
 
 # Inputs live in the read-only mounted dataset, outputs in the writable
@@ -137,6 +138,40 @@ STAGES = {
     # cleaning, so these sources need far MORE wall time per token, not less.
     # Given a whole session each they get ~10x the clock, and `general` is not
     # re-mined because it is already published at data/corpus.
+    # Tokenize the whole corpus into uint16 shards, ordered by curriculum
+    # stage. Both mined corpora are flattened into one `data/train` tree so the
+    # curriculum is planned over everything at once -- splitting the job would
+    # change the stage mixture.
+    "shard": {
+        "script": "pipelines/04_tokenize_shard.py",
+        "argv": ["--corpus", "data", "--split", "train",
+                 "--tokenizer", "tokenizer/tokenizer.json",
+                 "--out", "data/shards",
+                 "--shard-tokens", "100000000",
+                 "--lexicon", "{CODE}/data/lexicon/lexicon.jsonl"],
+        "fetch": [("tokenizer/tokenizer.json", "tokenizer/tokenizer.json")]
+                 + [(f"data/corpus/train/part-0{i}.jsonl.gz",
+                     f"data/train/bulk-0{i}.jsonl.gz") for i in range(3)]
+                 + [(f"data/corpus_genz/train/part-0{i}.jsonl.gz",
+                     f"data/train/genz-0{i}.jsonl.gz") for i in range(5)],
+        "publish": ["data/shards"],
+        "needs_lexicon": True,
+    },
+    "shard-val": {
+        "script": "pipelines/04_tokenize_shard.py",
+        "argv": ["--corpus", "data", "--split", "val",
+                 "--tokenizer", "tokenizer/tokenizer.json",
+                 "--out", "data/shards",
+                 "--shard-tokens", "50000000",
+                 "--lexicon", "{CODE}/data/lexicon/lexicon.jsonl"],
+        "fetch": [("tokenizer/tokenizer.json", "tokenizer/tokenizer.json")]
+                 + [(f"data/corpus/val/part-0{i}.jsonl.gz",
+                     f"data/val/bulk-0{i}.jsonl.gz") for i in range(3)]
+                 + [(f"data/corpus_genz/val/part-0{i}.jsonl.gz",
+                     f"data/val/genz-0{i}.jsonl.gz") for i in range(5)],
+        "publish": ["data/shards"],
+        "needs_lexicon": True,
+    },
     "mine-genz": {
         "script": "pipelines/02_mine_corpus.py",
         "argv": ["--out", "data/corpus_genz", "--target-tokens", "2000000000",
@@ -158,8 +193,10 @@ STAGES = {
         "argv": ["--corpus", "data", "--vocab-size", "49152",
                  "--out", "tokenizer/tokenizer.json",
                  "--lexicon", "{CODE}/data/lexicon/lexicon.jsonl"],
-        "fetch": [f"data/corpus_genz/train/part-0{i}.jsonl.gz" for i in range(5)]
-                 + ["data/corpus/train/part-00.jsonl.gz"],
+        "fetch": [(f"data/corpus_genz/train/part-0{i}.jsonl.gz",
+                   f"data/corpus_genz/train/part-0{i}.jsonl.gz") for i in range(5)]
+                 + [("data/corpus/train/part-00.jsonl.gz",
+                     "data/corpus/train/part-00.jsonl.gz")],
         "publish": ["tokenizer"],
         "needs_lexicon": True,
     },
