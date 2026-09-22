@@ -19,15 +19,21 @@ model:
 
 train:
   run_id: bussin-125m-v1
-  total_tokens: 10000000000
-  total_steps: 38146
+  # Measured from the built shards, not planned. The mined corpus yielded
+  # 6.752B tokens, not the 10B this config originally assumed -- that is how
+  # much Gen-Z-bearing text the sources actually hold. 53.65 tokens/param is
+  # well past Chinchilla (20) and into the over-trained regime small models
+  # want, though short of the 70+ originally targeted. One clean epoch is
+  # preferred over repeating a corpus this small.
+  total_tokens: 6752142180
+  total_steps: 25757
   global_batch_tokens: 262144
   seq_len: 1024
 
   lr_max: 0.0006
   lr_min: 6.0e-05
   warmup_steps: 400
-  stable_frac: 0.85          # WSD: decay begins at step 32424
+  stable_frac: 0.85          # WSD: decay begins at step 21893
   weight_decay: 0.1
   betas: [0.9, 0.95]
   eps: 1.0e-8
