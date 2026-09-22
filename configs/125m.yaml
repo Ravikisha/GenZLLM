@@ -81,6 +81,14 @@ relay:
   lease_margin_s: 1800
 
 data:
+  # Tried as a mounted path first; if it is not there the worker fetches the
+  # shard set named by the manifest from `repo` instead. The corpus is 13.5 GB,
+  # too large to ship as a Kaggle dataset beside the code and re-upload on
+  # every rebuild -- and Kaggle-to-Hub transfer is fast enough that fetching at
+  # session start is a couple of minutes against a nine-hour session.
   manifest: /kaggle/input/bussin-corpus/manifest.json
   val_manifest: /kaggle/input/bussin-corpus/val_manifest.json
+  repo: GodAsap/bussin-corpus
+  prefix: data/shards/train/
+  val_prefix: data/shards/val/
   tokenizer: tokenizer/tokenizer.json

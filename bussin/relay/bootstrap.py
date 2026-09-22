@@ -49,6 +49,55 @@ def load_config(path: str | Path) -> dict[str, Any]:
 _SEARCH_ROOTS = ("/kaggle/input", "/content", "/teamspace/studios", "data")
 
 
+def fetch_shards(repo: str, prefix: str, dest: Path, token: str | None,
+                 manifest_name: str = "manifest.json") -> Path | None:
+    """Download a shard set from the Hub into `dest`, returning the manifest.
+
+    The corpus is 13.5 GB of uint16 shards, which is too large to ship as a
+    Kaggle dataset alongside the code and would have to be re-uploaded every
+    time it is rebuilt. Kaggle-to-Hub transfer runs at datacentre speed (the
+    ETL jobs pulled 5.8 GB in 49s), so fetching at session start costs a couple
+    of minutes against a nine-hour session and keeps one source of truth.
+
+    Only the shards named by the manifest are fetched, so a partial or
+    superseded shard left in the repo is ignored rather than silently trained
+    on.
+    """
+    import json
+
+    from huggingface_hub import hf_hub_download
+
+    dest.mkdir(parents=True, exist_ok=True)
+    try:
+        mpath = hf_hub_download(repo, f"{prefix}{manifest_name}",
+                                repo_type="dataset", token=token,
+                                local_dir=str(dest))
+    except Exception as exc:
+        print(f"[bootstrap] no manifest at {repo}:{prefix}{manifest_name} "
+              f"({type(exc).__name__})", flush=True)
+        return None
+
+    manifest = json.loads(Path(mpath).read_text(encoding="utf-8"))
+    shards = manifest.get("shards", [])
+    print(f"[bootstrap] fetching {len(shards)} shards from {repo}:{prefix}",
+          flush=True)
+    t0 = time.time()
+    got = 0
+    for sh in shards:
+        name = Path(sh["path"]).name
+        local = dest / name
+        if local.exists() and local.stat().st_size > 0:
+            continue
+        hf_hub_download(repo, f"{prefix}{name}", repo_type="dataset",
+                        token=token, local_dir=str(dest))
+        got += 1
+        if got % 10 == 0:
+            print(f"[bootstrap]   {got}/{len(shards)} "
+                  f"({time.time() - t0:.0f}s)", flush=True)
+    print(f"[bootstrap] shards ready in {time.time() - t0:.0f}s", flush=True)
+    return Path(mpath)
+
+
 def resolve_data_path(path: str | None, max_depth: int = 6) -> str | None:
     """Return `path` if it exists, else find a file with the same name.
 
@@ -234,6 +283,15 @@ def run(config_path: str, *, dry_run: bool = False, max_steps: int | None = None
         data_cfg = cfg.get("data", {}) or {}
         manifest_path = resolve_data_path(data_cfg["manifest"])
         if not manifest_path or not Path(manifest_path).exists():
+            # Not mounted: pull it from the Hub instead.
+            scratch = writable_scratch() / "shards" / "train"
+            manifest_path = fetch_shards(
+                data_cfg.get("repo") or os.environ.get("BUSSIN_CORPUS_REPO", ""),
+                data_cfg.get("prefix", "data/shards/train/"),
+                scratch, os.environ.get("HF_TOKEN"),
+            )
+            manifest_path = str(manifest_path) if manifest_path else None
+        if not manifest_path or not Path(manifest_path).exists():
             raise SystemExit(
                 f"corpus manifest not found: {data_cfg['manifest']}. "
                 f"Attach the corpus dataset, or fix data.manifest in the config."
@@ -244,6 +302,14 @@ def run(config_path: str, *, dry_run: bool = False, max_steps: int | None = None
         loader = iter(TorchLoader(dataset, plan.micro_batch, str(device)))
 
         val_path = resolve_data_path(data_cfg.get("val_manifest"))
+        if data_cfg.get("val_manifest") and (
+                not val_path or not Path(val_path).exists()):
+            vp = fetch_shards(
+                data_cfg.get("repo") or os.environ.get("BUSSIN_CORPUS_REPO", ""),
+                data_cfg.get("val_prefix", "data/shards/val/"),
+                writable_scratch() / "shards" / "val", os.environ.get("HF_TOKEN"),
+            )
+            val_path = str(vp) if vp else val_path
         if val_path and Path(val_path).exists():
             val_ds = PackedDataset(Manifest.load(val_path),
                                    train_cfg.seq_len, shuffle_shards=False,
