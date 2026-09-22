@@ -59,7 +59,8 @@ def iter_jsonl(paths: list[Path]) -> Iterator[dict]:
                         continue
 
 
-def count_pools(paths: list[Path]) -> tuple[Counter, "array"]:
+def count_pools(paths: list[Path], shard_index: int = 0,
+                n_shards: int = 1) -> tuple[Counter, "array"]:
     """First streaming pass: how many documents per pool, and each document's
     pool in stream order.
 
@@ -74,7 +75,9 @@ def count_pools(paths: list[Path]) -> tuple[Counter, "array"]:
     counts: Counter = Counter()
     codes = array("B")
     order: dict[str, int] = {}
-    for row in iter_jsonl(paths):
+    for i, row in enumerate(iter_jsonl(paths)):
+        if n_shards > 1 and i % n_shards != shard_index:
+            continue
         pool = row.get("pool", "internet")
         if pool not in order:
             order[pool] = len(order)
@@ -135,6 +138,16 @@ def main() -> int:
     ap.add_argument("--no-register", action="store_true",
                     help="omit register control tokens (ablation only)")
     ap.add_argument("--lexicon", default="data/lexicon/lexicon.jsonl")
+    ap.add_argument("--shard-index", type=int, default=0)
+    ap.add_argument("--n-shards", type=int, default=1,
+                    help="split the work across N parallel sessions. Every "
+                         "session reads the whole corpus but keeps only the "
+                         "documents where i %% n == shard_index, so each one "
+                         "sees the same pool distribution and plans the same "
+                         "curriculum at 1/N scale. Splitting by FILE would not "
+                         "work: the bulk files are general-heavy and the genz "
+                         "files are not, so each job would plan a different "
+                         "mixture.")
     ap.add_argument("--deadline-seconds", type=int, default=0,
                     help="stop cleanly, close the shards and write the "
                          "manifest before the host kills the session "
@@ -166,7 +179,7 @@ def main() -> int:
     print(f"reading {len(paths)} file(s) from {src}")
 
     print("\n=== pass 1: counting pools ===")
-    counts, codes = count_pools(paths)
+    counts, codes = count_pools(paths, args.shard_index, args.n_shards)
     for pool, n in counts.most_common():
         print(f"  {pool:<10} {n:>10,} documents")
     total_docs = sum(counts.values())
@@ -211,7 +224,10 @@ def main() -> int:
     code_to_pool = {v: k for k, v in pool_order.items()}
     writers = {
         stage: ShardWriter(out_dir, args.shard_tokens,
-                           prefix=f"{args.split}_{stage}", stage=stage)
+                           prefix=(f"{args.split}_{stage}"
+                                   if args.n_shards == 1
+                                   else f"{args.split}_{stage}_s{args.shard_index}"),
+                           stage=stage)
         for stage in stages if sum(quota.get(stage, {}).values()) > 0
     }
     # Consumed as the second pass runs: a document goes to the first stage
@@ -233,7 +249,11 @@ def main() -> int:
         stats["docs"] += len(texts)
         batch[stage] = []
 
-    for i, row in enumerate(iter_jsonl(paths)):
+    kept = 0
+    for raw_i, row in enumerate(iter_jsonl(paths)):
+        if args.n_shards > 1 and raw_i % args.n_shards != args.shard_index:
+            continue
+        i, kept = kept, kept + 1
         pool = code_to_pool.get(codes[i], "internet") if i < len(codes) else "internet"
         stage = next((st for st in stages
                       if left.get(st, {}).get(pool, 0) > 0), None)
@@ -280,7 +300,8 @@ def main() -> int:
 
     manifest = Manifest(all_shards, root=out_dir, seq_len=args.seq_len,
                         vocab_size=vocab_size)
-    manifest_path = out_dir / "manifest.json"
+    manifest_path = out_dir / ("manifest.json" if args.n_shards == 1
+                               else f"manifest_s{args.shard_index}.json")
     manifest.save(manifest_path)
 
     print("\n=== summary ===")

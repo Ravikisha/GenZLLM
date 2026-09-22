@@ -148,6 +148,9 @@ STAGES = {
                  "--tokenizer", "tokenizer/tokenizer.json",
                  "--out", "data/shards",
                  "--shard-tokens", "100000000",
+                 # A single session was cancelled at Kaggle's 12h cap with
+                 # nothing published. Stop at 10h so partial shards survive.
+                 "--deadline-seconds", "36000",
                  "--lexicon", "{CODE}/data/lexicon/lexicon.jsonl"],
         "fetch": [("tokenizer/tokenizer.json", "tokenizer/tokenizer.json")]
                  + [(f"data/corpus/train/part-0{i}.jsonl.gz",
