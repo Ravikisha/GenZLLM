@@ -31,7 +31,8 @@ from pathlib import Path
 from typing import Any
 
 from ..config import ProjectConfig, project
-from ..relay.state import LocalBackend, RelayState, make_backend
+from ..relay.state import (LocalBackend, RelayState, make_backend,
+                           run_state_file)
 from .ledger import BUDGETS, Ledger, iso, rank_platforms, utcnow
 from .platforms import build_adapters
 
@@ -109,6 +110,21 @@ def save_dashboard(cfg: ProjectConfig, payload: dict[str, Any]) -> None:
 # ------------------------------------------------------------------ #
 
 
+def _run_id_from_config(config_path: str) -> str:
+    """The trainer keys its state on `train.run_id`, so the tick must too.
+
+    Using the config's filename instead meant the orchestrator and the worker
+    read different state files.
+    """
+    try:
+        import yaml
+
+        d = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
+        return str((d.get("train") or {}).get("run_id") or Path(config_path).stem)
+    except Exception:
+        return Path(config_path).stem
+
+
 def tick(
     config_path: str = "configs/400m.yaml",
     run_id: str | None = None,
@@ -124,9 +140,11 @@ def tick(
     out: dict[str, Any] = {"at": iso(now), "action": None, "reason": ""}
 
     # --- 1. run state -------------------------------------------------
-    backend = (LocalBackend(local_root) if local_root
-               else make_backend(cfg.state_uri, token=cfg.creds.hf_token))
-    run_id = run_id or Path(config_path).stem
+    run_id = run_id or _run_id_from_config(config_path)
+    backend = (LocalBackend(local_root, state_file=run_state_file(run_id))
+               if local_root
+               else make_backend(cfg.state_uri, token=cfg.creds.hf_token,
+                                 run_id=run_id))
     relay = RelayState(backend, run_id)
     state = relay.read()
     out["run"] = {

@@ -22,15 +22,21 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from bussin.relay.bootstrap import run
-from bussin.relay.state import LocalBackend, RelayState
+from bussin.relay.state import LocalBackend, RelayState, run_state_file
 
 CONFIG = "configs/smoke.yaml"
 ROOT = Path(".relay_e2e")
 STEPS_PER_SESSION = 25
 
 
+# Run state is per-run; reading the legacy shared path here would silently
+# report an empty state and send the test looking for a checkpoint named
+# "None".
+RUN_ID = "bussin-smoke-v1"
+
+
 def read_state() -> dict:
-    raw, _ = LocalBackend(ROOT).read()
+    raw, _ = LocalBackend(ROOT, state_file=run_state_file(RUN_ID)).read()
     return raw or {}
 
 

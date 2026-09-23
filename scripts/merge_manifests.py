@@ -76,7 +76,10 @@ def main() -> int:
     merged = {"seq_len": seq_len, "vocab_size": vocab_size,
               "n_shards": len(shards), "total_tokens": total, "shards": shards}
 
-    out = Path(args.out or f"data/shards/{args.split}/manifest.json")
+    # Not data/shards/<split>/manifest.json: the relay end-to-end test builds
+    # its fixtures there, and writing the real 75-shard manifest over the
+    # test's three-shard one made the suite fail on missing shards.
+    out = Path(args.out or f"data/manifests/{args.split}_manifest.json")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(merged, indent=2), encoding="utf-8")
 

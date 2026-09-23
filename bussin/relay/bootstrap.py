@@ -206,7 +206,7 @@ def run(config_path: str, *, dry_run: bool = False, max_steps: int | None = None
     print(f"[bootstrap] batch plan: {plan}", flush=True)
 
     # 5. claim the lease -------------------------------------------------
-    backend = make_backend(state_uri)
+    backend = make_backend(state_uri, run_id=train_cfg.run_id)
     relay = RelayState(backend, train_cfg.run_id)
     lease_s = info.session_limit_s + int(relay_cfg.get("lease_margin_s", 1800))
     try:

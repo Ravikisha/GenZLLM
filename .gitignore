@@ -32,3 +32,5 @@ kaggle.json
 dashboard_preview.html
 # ...but keep the small, high-value derived artefacts
 !/data/lexicon/communities.json
+/data/real_shards/
+/data/manifests/

@@ -23,6 +23,20 @@ from typing import Any, Protocol
 STATE_FILE = "RUN_STATE.json"
 
 
+def run_state_file(run_id: str | None) -> str:
+    """Where a run's state lives.
+
+    Per-run, because the state carries `latest_ckpt` and `finished`. With one
+    shared file a fresh run inherited the previous run's checkpoint pointer --
+    `bussin-125m-v1` reported step 400 and `ckpt-00000400` from a 5M-parameter
+    smoke run it had nothing to do with, and resuming it would have loaded
+    those weights into a 125M model.
+
+    `None` keeps the legacy path so existing state stays readable.
+    """
+    return STATE_FILE if not run_id else f"runs/{run_id}/{STATE_FILE}"
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -64,8 +78,8 @@ class StateBackend(Protocol):
 class LocalBackend:
     """Filesystem backend. Revision is the file's content hash."""
 
-    def __init__(self, root: str | Path) -> None:
-        self.path = Path(root) / STATE_FILE
+    def __init__(self, root: str | Path, state_file: str | None = None) -> None:
+        self.path = Path(root) / (state_file or STATE_FILE)
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
@@ -95,13 +109,15 @@ class HFBackend:
     """Hugging Face Hub backend using commit-SHA compare-and-swap."""
 
     def __init__(self, repo_id: str, token: str | None = None,
-                 repo_type: str = "model", revision: str = "main") -> None:
+                 repo_type: str = "model", revision: str = "main",
+                 state_file: str | None = None) -> None:
         from huggingface_hub import HfApi
 
         self.api = HfApi(token=token or os.environ.get("HF_TOKEN"))
         self.repo_id = repo_id
         self.repo_type = repo_type
         self.revision = revision
+        self.state_file = state_file or STATE_FILE
 
     def read(self):
         from huggingface_hub import hf_hub_download
@@ -117,7 +133,7 @@ class HFBackend:
 
         try:
             path = hf_hub_download(
-                self.repo_id, STATE_FILE, repo_type=self.repo_type,
+                self.repo_id, self.state_file, repo_type=self.repo_type,
                 revision=self.revision, force_download=True,
             )
         except EntryNotFoundError:
@@ -129,7 +145,7 @@ class HFBackend:
         from huggingface_hub.utils import HfHubHTTPError
 
         op = CommitOperationAdd(
-            path_in_repo=STATE_FILE,
+            path_in_repo=self.state_file,
             path_or_fileobj=json.dumps(state, indent=2).encode(),
         )
         # `lease` is None after release(), so this cannot assume a dict.
@@ -345,8 +361,14 @@ class RelayState:
         self._commit(state)
 
 
-def make_backend(uri: str, token: str | None = None) -> StateBackend:
-    """`hf://org/repo` or a local path."""
+def make_backend(uri: str, token: str | None = None,
+                 run_id: str | None = None) -> StateBackend:
+    """`hf://org/repo` or a local path.
+
+    Pass `run_id` to keep each run's state separate; omitting it uses the
+    legacy shared file.
+    """
+    state_file = run_state_file(run_id)
     if uri.startswith("hf://"):
-        return HFBackend(uri[len("hf://"):], token=token)
-    return LocalBackend(uri)
+        return HFBackend(uri[len("hf://"):], token=token, state_file=state_file)
+    return LocalBackend(uri, state_file=state_file)
