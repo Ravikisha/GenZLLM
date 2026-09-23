@@ -124,12 +124,20 @@ class DivergenceDetector:
         self,
         grad_norm_window: int = 100,
         grad_norm_factor: float = 10.0,
+        warmup_steps: int = 0,
         min_scaler_scale: float = 2**6,
         max_skipped: int = 5,
     ) -> None:
         self.window: list[float] = []
         self.grad_norm_window = grad_norm_window
         self.grad_norm_factor = grad_norm_factor
+        # Spikes are expected while the learning rate ramps on a from-scratch
+        # model, and `grad_clip` is what handles them: the step is skipped and
+        # nothing corrupts. Counting those skips toward a fatal budget killed a
+        # run at step 250 of a 400-step warmup whose loss was descending
+        # cleanly (9.53 -> 4.49). During warmup a spike still skips the step;
+        # it just does not accumulate toward "this run has diverged".
+        self.warmup_steps = warmup_steps
         self.min_scaler_scale = min_scaler_scale
         self.max_skipped = max_skipped
         self.skipped = 0
@@ -158,7 +166,8 @@ class DivergenceDetector:
                     self.skipped += 1
                     self.skipped_recent.append(step)
                     self.skipped_recent = [s for s in self.skipped_recent if step - s <= 100]
-                    if len(self.skipped_recent) > self.max_skipped:
+                    if (len(self.skipped_recent) > self.max_skipped
+                            and step >= self.warmup_steps):
                         return (
                             True,
                             f"{len(self.skipped_recent)} gradient spikes in 100 steps "
