@@ -56,7 +56,10 @@ train:
 batch:
   micro_batch: null
   micro_batch_hints:
-    "kaggle-gpu:T4": 8
+    # Measured, not guessed: micro 8 at seq 1024 put 13.21 GB on a 14.56 GB T4
+    # and died in backward asking for 1.50 GB more. 4 halves the activation
+    # memory and keeps the global batch exact (4 x 2 dev x 32 accum = 256 seq).
+    "kaggle-gpu:T4": 4
     "kaggle-tpu": 16
     "local:cpu": 1
 
