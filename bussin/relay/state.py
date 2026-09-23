@@ -20,6 +20,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+# How many times to retry a commit the Hub rejects as busy (409).
+WRITE_RETRIES = 6
+
 STATE_FILE = "RUN_STATE.json"
 
 
@@ -151,21 +154,35 @@ class HFBackend:
         # `lease` is None after release(), so this cannot assume a dict.
         lease = state.get("lease") or {}
         who = lease.get("worker_id", "released")
-        try:
-            info = self.api.create_commit(
-                repo_id=self.repo_id,
-                repo_type=self.repo_type,
-                revision=self.revision,
-                operations=[op],
-                commit_message=f"relay: step {state.get('step')} by {who}",
-                parent_commit=parent_revision,
-            )
-        except HfHubHTTPError as exc:
-            # 412 Precondition Failed is the CAS rejection we rely on.
-            if "412" in str(exc) or "parent" in str(exc).lower():
-                raise CASConflict(str(exc)) from exc
-            raise
-        return info.oid
+        # 409 is not a CAS rejection. The Hub serialises commits per repo and
+        # returns "Another commit operation is in progress" when one is already
+        # in flight -- which, with several relay workers plus the orchestrator
+        # writing the ledger and dashboard to the same repo, is routine rather
+        # than exceptional. Retrying is correct; treating it as a lost race is
+        # not, and the first dispatched training session died on it.
+        delay = 1.0
+        for attempt in range(WRITE_RETRIES):
+            try:
+                info = self.api.create_commit(
+                    repo_id=self.repo_id,
+                    repo_type=self.repo_type,
+                    revision=self.revision,
+                    operations=[op],
+                    commit_message=f"relay: step {state.get('step')} by {who}",
+                    parent_commit=parent_revision,
+                )
+                return info.oid
+            except HfHubHTTPError as exc:
+                text = str(exc)
+                # 412 Precondition Failed is the CAS rejection we rely on.
+                if "412" in text or "parent" in text.lower():
+                    raise CASConflict(text) from exc
+                busy = "409" in text or "another commit operation" in text.lower()
+                if not busy or attempt == WRITE_RETRIES - 1:
+                    raise
+                time.sleep(delay)
+                delay = min(delay * 2, 30.0)
+        raise RuntimeError("unreachable")
 
 
 # ------------------------------------------------------------------ #
