@@ -237,6 +237,11 @@ class RelayState:
         self.run_id = run_id
         self._revision: str | None = None
         self._state: RunState | None = None
+        # Set on claim. Ownership is decided by this, not by whatever the
+        # outgoing state happens to hold -- release() clears the lease before
+        # committing, so comparing against it reports the worker as having
+        # lost its own lease.
+        self._worker_id: str | None = None
 
     # -------------------------------------------------------------- #
 
@@ -259,6 +264,7 @@ class RelayState:
         `lease_seconds` should be the session limit plus a margin, so a session
         that dies without releasing cannot block the next worker for long.
         """
+        self._worker_id = worker_id
         for attempt in range(retries):
             state = self.read()
 
@@ -301,8 +307,19 @@ class RelayState:
                 if attempt == retries - 1:
                     raise
                 # Someone else wrote. Re-read, re-apply our fields, retry.
+                # A 412 here usually means the *branch* moved, not that the
+                # lease changed hands: the ledger, the dashboard snapshot and
+                # checkpoint uploads all commit to this same repo, and the CAS
+                # parent is the branch head rather than the state file. So the
+                # question is only ever "does someone else hold the lease now",
+                # and the answer is compared against our own worker id --
+                # release() has already set state.lease to None by this point,
+                # and comparing against that reported every release as a lost
+                # lease and killed the session on exit.
                 fresh = self.read()
-                if (fresh.lease or {}).get("worker_id") != (state.lease or {}).get("worker_id"):
+                owner = (fresh.lease or {}).get("worker_id")
+                mine = self._worker_id or (state.lease or {}).get("worker_id")
+                if owner is not None and mine is not None and owner != mine:
                     raise LeaseHeld("lease was taken by another worker mid-run")
                 fresh.step = state.step
                 fresh.tokens_seen = state.tokens_seen

@@ -99,6 +99,49 @@ def main() -> int:
             conflicted = True
         check("stale parent revision is rejected", conflicted)
 
+        print("\n=== 6b. a moving branch is not a lost lease ===")
+        # The Hub CASes on the branch head, not on the state file, and the
+        # ledger, the dashboard snapshot and checkpoint uploads all commit to
+        # the same repo. So a worker routinely gets 412 for commits that have
+        # nothing to do with its lease. release() clears the lease before
+        # committing, so the ownership check compared our worker id against
+        # None and called every release a lost lease -- which killed the first
+        # dispatched training sessions on exit, after training had worked.
+        #
+        # LocalBackend CAS is per-file and never produces this, which is why
+        # the suite passed while production failed. The conflict is injected.
+        tmp6 = Path(tempfile.mkdtemp(prefix="bussin_moved_"))
+        try:
+            inner = LocalBackend(tmp6)
+            fired = {"n": 0}
+
+            class MovingBranch:
+                """Rejects the first write the way a bumped branch does."""
+
+                def read(self):
+                    return inner.read()
+
+                def write(self, state, parent_revision):
+                    if fired["n"] == 0:
+                        fired["n"] = 1
+                        raise CASConflict("412 Precondition Failed: branch moved")
+                    return inner.write(state, parent_revision)
+
+            r = RelayState(MovingBranch(), "run-6b")
+            r.read()
+            r.claim("worker-a", "kaggle-gpu", 600)
+            released = True
+            try:
+                r.release(steps_done=10, wall_seconds=1.0, train_seconds=0.0)
+            except LeaseHeld:
+                released = False
+            after = RelayState(LocalBackend(tmp6), "run-6b").read()
+            check("release survives a branch bumped by another writer",
+                  released and after.lease is None,
+                  f"conflicts_injected={fired['n']} lease={after.lease}")
+        finally:
+            shutil.rmtree(tmp6, ignore_errors=True)
+
         print("\n=== 7. two workers race for one free lease ===")
         tmp2 = Path(tempfile.mkdtemp(prefix="bussin_race_"))
         try:
