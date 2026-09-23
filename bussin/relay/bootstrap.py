@@ -184,8 +184,18 @@ def run(config_path: str, *, dry_run: bool = False, max_steps: int | None = None
     )
 
     relay_cfg = cfg.get("relay", {}) or {}
-    state_uri = local_root or relay_cfg.get("state_uri")
-    ckpt_uri = local_root or relay_cfg.get("ckpt_uri")
+    def _uri(key: str) -> str | None:
+        # A committed config cannot carry the account name, so CHANGEME is the
+        # normal state of these fields; the environment supplies the real
+        # target at dispatch time, the same way HF_TOKEN arrives.
+        v = relay_cfg.get(key)
+        if v and "CHANGEME" not in str(v):
+            return str(v)
+        repo = os.environ.get("BUSSIN_CKPT_REPO")
+        return f"hf://{repo}" if repo else v
+
+    state_uri = local_root or _uri("state_uri")
+    ckpt_uri = local_root or _uri("ckpt_uri")
     if not state_uri or "CHANGEME" in str(state_uri):
         raise SystemExit(
             "relay.state_uri is unset. Point it at hf://<you>/bussin-ckpt "

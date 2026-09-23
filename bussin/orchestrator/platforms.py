@@ -74,6 +74,10 @@ import os, subprocess, sys, time
 T0 = time.time()
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+# The configs carry `hf://CHANGEME/...` so no account name is committed;
+# the real target travels with the dispatch instead.
+os.environ["BUSSIN_CKPT_REPO"] = "{ckpt_repo}"
+os.environ["BUSSIN_CORPUS_REPO"] = "{corpus_repo}"
 
 # Prefer Kaggle Secrets so the token never sits in kernel source. Add it under
 # Add-ons -> Secrets as HF_TOKEN. The embedded value is a fallback for the
@@ -213,6 +217,8 @@ class KaggleAdapter(Adapter):
             (work / "worker.py").write_text(
                 KAGGLE_NOTEBOOK.format(
                     hf_token=self.cfg.creds.hf_token or "",
+                ckpt_repo=self.cfg.ckpt_repo,
+                corpus_repo=self.cfg.corpus_repo,
                     code_dir=self.code_dir,
                     code_slug=self.code_slug,
                     config=config_path,
@@ -297,6 +303,8 @@ class ColabAdapter(Adapter):
         script.write_text(
             KAGGLE_NOTEBOOK.format(
                 hf_token=self.cfg.creds.hf_token or "",
+                ckpt_repo=self.cfg.ckpt_repo,
+                corpus_repo=self.cfg.corpus_repo,
                 repo_url=self.repo_url if hasattr(self, "repo_url") else
                 os.environ.get("BUSSIN_REPO_URL", ""),
                 config=config_path,
