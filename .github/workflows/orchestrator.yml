@@ -26,8 +26,13 @@ on:
         description: "training config"
         default: "configs/125m.yaml"
       platform:
+        # Pinned to the validated backend. The ranker puts kaggle-tpu first on
+        # assumed throughput, but that backend has never completed a session:
+        # left to rank freely it took the lease and managed 6 steps in 6h14m
+        # (~73 tok/s against the GPU's 15,973) while blocking all GPU work.
+        # Unpin once the XLA path is actually proven.
         description: "force a platform (blank = rank by throughput)"
-        default: ""
+        default: "kaggle-gpu"
       dry_run:
         description: "decide but do not dispatch"
         type: boolean
@@ -74,7 +79,7 @@ jobs:
         run: |
           python -m bussin.orchestrator.tick \
             --config "${{ github.event.inputs.config || 'configs/125m.yaml' }}" \
-            ${{ github.event.inputs.platform && format('--platform {0}', github.event.inputs.platform) || '' }} \
+            --platform "${{ github.event.inputs.platform || 'kaggle-gpu' }}" \
             ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }} \
             | tee tick.log
 

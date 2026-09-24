@@ -275,6 +275,20 @@ def load_checkpoint(
 
     if optimizer is not None and (d / "optimizer.pt").exists():
         optimizer.load_state_dict(torch.load(d / "optimizer.pt", map_location=map_location))
+        # Adam's exp_avg/exp_avg_sq load onto `map_location` (cpu by default)
+        # while the parameters are already on the accelerator, and the first
+        # optimizer.step() then dies with "Expected all tensors to be on the
+        # same device, cuda:0 and cpu". Only reachable on a *resume* that
+        # carries real optimizer state, so a fresh run and a CPU-only resume
+        # test both pass while a real handover fails.
+        for group in optimizer.param_groups:
+            for param in group["params"]:
+                st = optimizer.state.get(param)
+                if not st:
+                    continue
+                for k, v in st.items():
+                    if torch.is_tensor(v) and v.device != param.device:
+                        st[k] = v.to(param.device)
     if scheduler is not None and (d / "scheduler.json").exists():
         scheduler.load_state_dict(json.loads((d / "scheduler.json").read_text(encoding="utf-8")))
     if scaler is not None and (d / "scaler.json").exists() and hasattr(scaler, "load_state_dict"):
