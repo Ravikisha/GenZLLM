@@ -78,6 +78,14 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 # the real target travels with the dispatch instead.
 os.environ["BUSSIN_CKPT_REPO"] = "{ckpt_repo}"
 os.environ["BUSSIN_CORPUS_REPO"] = "{corpus_repo}"
+os.environ["BUSSIN_WORKER_ID"] = "{worker_id}"
+# The Hub cache defaults to ~/.cache, which on Kaggle shares the small overlay
+# with /kaggle/working. A 13.5 GB corpus there filled the disk and truncated a
+# checkpoint mid-write at step 1570. /kaggle/temp is the ~60 GB scratch.
+for _scratch in ("/kaggle/temp", "/kaggle/tmp"):
+    if os.path.isdir(_scratch):
+        os.environ["HF_HOME"] = os.path.join(_scratch, "hf")
+        break
 
 # Prefer Kaggle Secrets so the token never sits in kernel source. Add it under
 # Add-ons -> Secrets as HF_TOKEN. The embedded value is a fallback for the
@@ -219,6 +227,7 @@ class KaggleAdapter(Adapter):
                     hf_token=self.cfg.creds.hf_token or "",
                 ckpt_repo=self.cfg.ckpt_repo,
                 corpus_repo=self.cfg.corpus_repo,
+                worker_id=worker_id,
                     code_dir=self.code_dir,
                     code_slug=self.code_slug,
                     config=config_path,
@@ -305,6 +314,7 @@ class ColabAdapter(Adapter):
                 hf_token=self.cfg.creds.hf_token or "",
                 ckpt_repo=self.cfg.ckpt_repo,
                 corpus_repo=self.cfg.corpus_repo,
+                worker_id=worker_id,
                 repo_url=self.repo_url if hasattr(self, "repo_url") else
                 os.environ.get("BUSSIN_REPO_URL", ""),
                 config=config_path,

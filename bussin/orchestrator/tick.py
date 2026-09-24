@@ -171,6 +171,13 @@ def tick(
     # --- 3. ledger ----------------------------------------------------
     ledger = load_ledger(cfg)
 
+    # Close records for sessions that already finished. Without this the
+    # ledger saturates on phantom hours and refuses to dispatch.
+    n_hist = ledger.reconcile_from_history(state.history)
+    n_stale = ledger.close_stale(now)
+    if n_hist or n_stale:
+        out["closed_dispatches"] = {"from_history": n_hist, "stale": n_stale}
+
     # A lease that has expired means the session it belonged to is gone;
     # close its ledger record so its hours stop accruing as "running".
     if lease and not lease.is_live(now):

@@ -19,8 +19,12 @@ on:
   workflow_dispatch:
     inputs:
       config:
+        # The scheduled default must be the run actually being trained.
+        # It defaulted to 400m while bussin-125m-v1 was the live run, so four
+        # scheduled ticks managed a run that did not exist and left the real
+        # one idle for 15 hours after its session ended.
         description: "training config"
-        default: "configs/400m.yaml"
+        default: "configs/125m.yaml"
       platform:
         description: "force a platform (blank = rank by throughput)"
         default: ""
@@ -69,7 +73,7 @@ jobs:
           HF_HUB_DISABLE_SYMLINKS_WARNING: "1"
         run: |
           python -m bussin.orchestrator.tick \
-            --config "${{ github.event.inputs.config || 'configs/400m.yaml' }}" \
+            --config "${{ github.event.inputs.config || 'configs/125m.yaml' }}" \
             ${{ github.event.inputs.platform && format('--platform {0}', github.event.inputs.platform) || '' }} \
             ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }} \
             | tee tick.log

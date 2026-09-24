@@ -246,6 +246,54 @@ class Ledger:
         self.updated_at = iso(utcnow())
         return d
 
+    def reconcile_from_history(self, history: list[dict] | None) -> int:
+        """Close dispatches whose session already reported itself finished.
+
+        A dispatch record is opened at launch and only ever closed when a tick
+        happens to see an *expired* lease. The normal path -- a worker that
+        finishes and releases its lease cleanly -- left the record `running`
+        forever, and `billed()` then charges it a whole session. Six leaked
+        GPU records read as 72h against a 30h quota and the orchestrator
+        stopped dispatching entirely while the GPU was in fact idle.
+
+        The run state already records each session's true wall time, so use it.
+        """
+        closed = 0
+        for h in history or []:
+            wid = h.get("worker_id")
+            wall = h.get("wall_s")
+            if not wid:
+                continue
+            hours = (float(wall) / 3600.0) if wall is not None else None
+            if self.close_dispatch(wid, status="done", hours=hours):
+                closed += 1
+        return closed
+
+    def close_stale(self, now: datetime | None = None) -> int:
+        """Close `running` records older than the platform's session limit.
+
+        Such a record cannot correspond to a live session -- the host would
+        have killed it -- so it is a launch whose completion was never
+        observed, typically because the session died before claiming a lease.
+        """
+        now = now or utcnow()
+        closed = 0
+        for raw in self.dispatches:
+            if raw.get("status") != "running":
+                continue
+            b = BUDGETS.get(raw.get("platform", ""))
+            start = parse(raw.get("dispatched_at"))
+            if not b or not start:
+                continue
+            elapsed = (now - start).total_seconds() / 3600
+            if elapsed > b.session_hours:
+                raw["status"] = "unknown"
+                raw["finished_at"] = iso(now)
+                raw["hours"] = round(min(elapsed, b.session_hours), 4)
+                raw["detail"] = "closed by staleness sweep"
+                closed += 1
+        return closed
+
     def close_dispatch(self, worker_id: str, status: str = "done",
                        hours: float | None = None, detail: str = "") -> bool:
         for raw in reversed(self.dispatches):

@@ -68,10 +68,39 @@ def fetch_shards(repo: str, prefix: str, dest: Path, token: str | None,
     from huggingface_hub import hf_hub_download
 
     dest.mkdir(parents=True, exist_ok=True)
+
+    def _link(cached: str, name: str) -> Path:
+        """Point at the cached blob rather than copying it.
+
+        `local_dir=` can leave the file in BOTH the Hub cache and the target,
+        and at 13.5 GB that second copy filled the disk and truncated a
+        checkpoint mid-write. A symlink costs nothing and numpy memory-maps
+        through it fine.
+        """
+        link = dest / name
+        if link.exists() or link.is_symlink():
+            link.unlink()
+        try:
+            link.symlink_to(cached)
+        except OSError:
+            import shutil as _sh
+            _sh.copy(cached, link)
+        return link
+
+    def _free_gb(path: str) -> float:
+        import shutil as _sh
+        try:
+            return _sh.disk_usage(path).free / 1e9
+        except Exception:
+            return float("nan")
+
+    print(f"[bootstrap] disk free: scratch {_free_gb(str(dest)):.1f} GB, "
+          f"/kaggle/working {_free_gb('/kaggle/working'):.1f} GB", flush=True)
+
     try:
-        mpath = hf_hub_download(repo, f"{prefix}{manifest_name}",
-                                repo_type="dataset", token=token,
-                                local_dir=str(dest))
+        cached_m = hf_hub_download(repo, f"{prefix}{manifest_name}",
+                                   repo_type="dataset", token=token)
+        mpath = _link(cached_m, manifest_name)
     except Exception as exc:
         print(f"[bootstrap] no manifest at {repo}:{prefix}{manifest_name} "
               f"({type(exc).__name__})", flush=True)
@@ -88,13 +117,15 @@ def fetch_shards(repo: str, prefix: str, dest: Path, token: str | None,
         local = dest / name
         if local.exists() and local.stat().st_size > 0:
             continue
-        hf_hub_download(repo, f"{prefix}{name}", repo_type="dataset",
-                        token=token, local_dir=str(dest))
+        cached = hf_hub_download(repo, f"{prefix}{name}", repo_type="dataset",
+                                 token=token)
+        _link(cached, name)
         got += 1
         if got % 10 == 0:
             print(f"[bootstrap]   {got}/{len(shards)} "
                   f"({time.time() - t0:.0f}s)", flush=True)
-    print(f"[bootstrap] shards ready in {time.time() - t0:.0f}s", flush=True)
+    print(f"[bootstrap] shards ready in {time.time() - t0:.0f}s; "
+          f"disk free {_free_gb(str(dest)):.1f} GB", flush=True)
     return Path(mpath)
 
 

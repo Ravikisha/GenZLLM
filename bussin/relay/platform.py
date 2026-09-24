@@ -126,7 +126,12 @@ def get_platform_info() -> PlatformInfo:
         supports_bf16=bf16,
         session_limit_s=SESSION_LIMITS.get(plat, SESSION_LIMITS["unknown"]),
         checkpoint_reserve_s=CHECKPOINT_RESERVE.get(plat, CHECKPOINT_RESERVE["unknown"]),
-        worker_id=f"{plat}-{uuid.uuid4().hex[:6]}",
+        # The dispatcher records a worker_id in the quota ledger before the
+        # session starts. If the worker then invents its own, the ledger can
+        # never match the session that finished and the record accrues
+        # forever -- which saturated the quota and stopped all dispatching.
+        worker_id=os.environ.get("BUSSIN_WORKER_ID")
+        or f"{plat}-{uuid.uuid4().hex[:6]}",
         host=socket.gethostname(),
     )
 
