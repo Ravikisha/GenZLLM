@@ -331,10 +331,21 @@ class RelayState:
                 time.sleep(1.0 + attempt * 2)
 
     def heartbeat(self, lease_seconds: int) -> None:
-        """Extend the lease. Called every ~10 minutes while training."""
-        state = self._state or self.read()
+        """Extend the lease, but only while we still hold it.
+
+        This used to renew whatever the *cached* state said, without checking
+        the owner. A worker whose lease had been revoked kept renewing it and
+        took it back from the rightful holder: a stalled TPU session
+        re-acquired the lease after it had been cleared and a GPU worker had
+        claimed it, then held it for another 24 hours -- while dead -- because
+        its final heartbeat had pushed the expiry far into the future.
+        """
+        state = self.read()
+        owner = (state.lease or {}).get("worker_id")
         if not state.lease:
-            return
+            raise LeaseHeld("lease disappeared; another worker may have taken it")
+        if self._worker_id and owner != self._worker_id:
+            raise LeaseHeld(f"lease now held by {owner}, not {self._worker_id}")
         state.lease["expires_at"] = _iso(_utcnow() + timedelta(seconds=lease_seconds))
         self._commit(state)
 

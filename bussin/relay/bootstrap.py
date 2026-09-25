@@ -284,6 +284,15 @@ def run(config_path: str, *, dry_run: bool = False, max_steps: int | None = None
         )
         curriculum = build_curriculum(cfg, train_cfg.total_steps)
 
+        # Move the model BEFORE the optimizer exists and before any checkpoint
+        # is loaded. Done afterwards (as it was), the optimizer binds CPU
+        # params, `load_state_dict` casts Adam's exp_avg to the param device --
+        # still CPU -- and the later `.to(device)` moves the params without the
+        # optimizer state, so the first step dies with "Expected all tensors to
+        # be on the same device, cuda:0 and cpu". Only a resume carrying real
+        # optimizer state reaches it, so a fresh run looks fine.
+        model.to(device)
+
         trainer = Trainer(model, model_cfg, train_cfg, plan, info, schedule,
                           device, precision, curriculum)
 
@@ -317,8 +326,6 @@ def run(config_path: str, *, dry_run: bool = False, max_steps: int | None = None
             print(f"[bootstrap] resumed step {trainer.step} "
                   f"(written by {loaded['meta'].get('written_by')} on "
                   f"{loaded['meta'].get('platform')})", flush=True)
-
-        model.to(device)
 
         # data ------------------------------------------------------------
         data_cfg = cfg.get("data", {}) or {}
