@@ -128,6 +128,19 @@ class CheckpointMeta:
         return self.__dict__.copy()
 
 
+def _scaler_jsonable(v):
+    """JSON-safe without destroying integer types."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, int):
+        return int(v)
+    if isinstance(v, float):
+        return float(v)
+    if torch.is_tensor(v):
+        return float(v.item()) if v.numel() == 1 else v.tolist()
+    return v
+
+
 def save_checkpoint(
     out_dir: str | Path,
     model: torch.nn.Module,
@@ -164,8 +177,13 @@ def save_checkpoint(
             json.dumps(scheduler.state_dict()), encoding="utf-8"
         )
     if scaler is not None and hasattr(scaler, "state_dict"):
+        # Do NOT coerce everything to float. GradScaler's `growth_interval`
+        # and `_growth_tracker` are ints, and torch's C++ `_amp_update_scale_`
+        # rejects a float: a resumed session died with "argument
+        # 'growth_interval' must be int, not float" on its first optimizer
+        # step. Booleans are checked before ints because bool is a subclass.
         (tmp / "scaler.json").write_text(
-            json.dumps({k: float(v) if isinstance(v, (int, float)) else v
+            json.dumps({k: _scaler_jsonable(v)
                         for k, v in scaler.state_dict().items()}),
             encoding="utf-8",
         )
@@ -293,7 +311,12 @@ def load_checkpoint(
         scheduler.load_state_dict(json.loads((d / "scheduler.json").read_text(encoding="utf-8")))
     if scaler is not None and (d / "scaler.json").exists() and hasattr(scaler, "load_state_dict"):
         try:
-            scaler.load_state_dict(json.loads((d / "scaler.json").read_text(encoding="utf-8")))
+            raw_scaler = json.loads((d / "scaler.json").read_text(encoding="utf-8"))
+            # Checkpoints written before the fix above stored these as floats.
+            for key in ("growth_interval", "_growth_tracker"):
+                if key in raw_scaler and raw_scaler[key] is not None:
+                    raw_scaler[key] = int(raw_scaler[key])
+            scaler.load_state_dict(raw_scaler)
         except Exception:
             pass  # moving fp16->bf16 backend: scaler state is not transferable
     if (d / "rng.pt").exists():
