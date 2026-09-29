@@ -127,6 +127,7 @@ class DivergenceDetector:
         warmup_steps: int = 0,
         min_scaler_scale: float = 2**6,
         max_skipped: int = 5,
+        grad_clip: float = 1.0,
     ) -> None:
         self.window: list[float] = []
         self.grad_norm_window = grad_norm_window
@@ -138,6 +139,19 @@ class DivergenceDetector:
         # cleanly (9.53 -> 4.49). During warmup a spike still skips the step;
         # it just does not accumulate toward "this run has diverged".
         self.warmup_steps = warmup_steps
+        # A purely relative test gets *more* sensitive as training stabilises.
+        # By step 1,890 the median gradient norm had fallen to 0.2, so the
+        # 10x rule flagged anything above 0.2*10 = 2.0 -- ordinary batch
+        # variance -- and killed the run in a loop for four days while the
+        # loss was descending (5.00 -> 4.91).
+        #
+        # A gradient only matters if clipping cannot contain it. Below
+        # `grad_clip` the update magnitude is bounded no matter how large the
+        # raw norm, so a spike must ALSO clear an absolute floor tied to the
+        # clip threshold before it counts. Genuine divergence shows up as
+        # non-finite loss or scaler collapse, both checked separately and
+        # unconditionally.
+        self.grad_norm_floor = max(grad_clip, 0.0) * 10.0
         self.min_scaler_scale = min_scaler_scale
         self.max_skipped = max_skipped
         self.skipped = 0
@@ -162,7 +176,10 @@ class DivergenceDetector:
         if grad_norm is not None and math.isfinite(grad_norm):
             if len(self.window) >= 20:
                 median = sorted(self.window)[len(self.window) // 2]
-                if median > 0 and grad_norm > self.grad_norm_factor * median:
+                spike = (median > 0
+                         and grad_norm > self.grad_norm_factor * median
+                         and grad_norm > self.grad_norm_floor)
+                if spike:
                     self.skipped += 1
                     self.skipped_recent.append(step)
                     self.skipped_recent = [s for s in self.skipped_recent if step - s <= 100]

@@ -150,7 +150,8 @@ class Trainer:
             lr=train_cfg.lr_max, betas=train_cfg.betas, eps=train_cfg.eps,
         )
         self.scaler = self.precision.make_scaler()
-        self.detector = DivergenceDetector(warmup_steps=train_cfg.warmup_steps)
+        self.detector = DivergenceDetector(warmup_steps=train_cfg.warmup_steps,
+                                           grad_clip=train_cfg.grad_clip)
 
         self.step = 0
         self.tokens_seen = 0
