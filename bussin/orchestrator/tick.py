@@ -125,6 +125,37 @@ def _run_id_from_config(config_path: str) -> str:
         return Path(config_path).stem
 
 
+# Consecutive finished sessions that ended on the same step before the run is
+# called stalled. Two is too twitchy (a session can legitimately die during
+# its first checkpoint interval); three means a reproducible failure.
+STALL_SESSIONS = 3
+
+
+def detect_stall(history: list[dict] | None, step: int) -> dict | None:
+    """Is the run dispatching fine but making no progress?
+
+    A crash loop looks exactly like healthy operation from the dispatcher's
+    side: the tick launches a session, the session claims a lease, dies, and
+    releases cleanly. Only the *step* reveals it, and only across sessions.
+    """
+    sessions = [h for h in (history or []) if h.get("end_step") is not None]
+    if len(sessions) < STALL_SESSIONS:
+        return None
+    recent = sessions[-STALL_SESSIONS:]
+    ends = {h.get("end_step") for h in recent}
+    if len(ends) != 1 or recent[-1].get("end_step") != step:
+        return None
+    wall = [float(h.get("wall_s") or 0.0) for h in recent]
+    return {
+        "stalled_at_step": step,
+        "sessions": len(recent),
+        "workers": [h.get("worker_id") for h in recent],
+        "wasted_hours": round(sum(wall) / 3600.0, 2),
+        "detail": (f"{len(recent)} consecutive sessions ended at step {step}; "
+                   f"the run is dispatching but not advancing"),
+    }
+
+
 def tick(
     config_path: str = "configs/400m.yaml",
     run_id: str | None = None,
@@ -134,6 +165,7 @@ def tick(
     local_root: str | None = None,
     publish_dashboard: bool = True,
     force_platform: str | None = None,
+    ignore_stall: bool = False,
 ) -> dict[str, Any]:
     cfg = project()
     now = utcnow()
@@ -170,6 +202,12 @@ def tick(
 
     # --- 3. ledger ----------------------------------------------------
     ledger = load_ledger(cfg)
+
+    stall = detect_stall(state.history, state.step)
+    if stall:
+        out["stall"] = stall
+        print(f"!! STALLED: {stall['detail']} "
+              f"({stall['wasted_hours']}h burned)", flush=True)
 
     # Close records for sessions that already finished. Without this the
     # ledger saturates on phantom hours and refuses to dispatch.
@@ -210,6 +248,16 @@ def tick(
                          f"({soonest[0]}, in "
                          f"{(soonest[1] - now).total_seconds() / 3600:.1f}h)")
         out["next_reset"] = iso(soonest[1])
+        return _finish(cfg, out, ledger, publish_dashboard, dry_run)
+
+    if stall and not ignore_stall:
+        # Dispatching again would just burn another session against the same
+        # deterministic failure. The override is an explicit flag, NOT
+        # `--platform`: scheduled ticks pass a pinned platform on every run,
+        # so keying off that would disable this exact check in production --
+        # the only place it matters.
+        out["action"] = "halted"
+        out["reason"] = stall["detail"] + "; halting (pass --ignore-stall to retry)"
         return _finish(cfg, out, ledger, publish_dashboard, dry_run)
 
     adapters = build_adapters(cfg, code_slug, datasets)
@@ -308,6 +356,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--local-root", default=None)
     ap.add_argument("--platform", default=None,
                     help="force a platform instead of ranking by throughput")
+    ap.add_argument("--ignore-stall", action="store_true",
+                    help="dispatch even though consecutive sessions made no "
+                         "progress -- use after fixing the cause")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
@@ -316,6 +367,7 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=args.dry_run or args.status, code_slug=args.code_dataset,
         datasets=args.dataset, local_root=args.local_root,
         publish_dashboard=not args.status, force_platform=args.platform,
+        ignore_stall=args.ignore_stall,
     )
     print(json.dumps(out, indent=1) if args.json else format_report(out))
     return 0
