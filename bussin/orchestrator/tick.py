@@ -131,6 +131,41 @@ def _run_id_from_config(config_path: str) -> str:
 STALL_SESSIONS = 3
 
 
+# Squash the checkpoint repo's history when it grows past this many commits.
+# Squashing moves the branch head, which invalidates the compare-and-swap
+# parent a running worker holds, so it only ever happens while no lease is
+# live -- the same reason it was safe to do by hand.
+SQUASH_EVERY_COMMITS = 40
+
+
+def maybe_squash_history(cfg: ProjectConfig, dry_run: bool) -> dict | None:
+    """Reclaim git history on the checkpoint repo when it has grown.
+
+    Returns a record of what happened, or None if nothing was needed.
+    """
+    from huggingface_hub import HfApi
+
+    api = HfApi(token=cfg.creds.hf_token)
+    try:
+        commits = api.list_repo_commits(cfg.ckpt_repo, repo_type="model")
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {str(exc)[:120]}"}
+
+    n = len(commits)
+    if n < SQUASH_EVERY_COMMITS:
+        return None
+    if dry_run:
+        return {"would_squash": cfg.ckpt_repo, "commits": n}
+    try:
+        api.super_squash_history(
+            repo_id=cfg.ckpt_repo, repo_type="model",
+            commit_message="squash: reclaim history (only the latest checkpoint is needed)",
+        )
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {str(exc)[:120]}"}
+    return {"squashed": cfg.ckpt_repo, "commits_collapsed": n}
+
+
 def detect_stall(history: list[dict] | None, step: int) -> dict | None:
     """Is the run dispatching fine but making no progress?
 
@@ -202,6 +237,10 @@ def tick(
 
     # --- 3. ledger ----------------------------------------------------
     ledger = load_ledger(cfg)
+
+    squashed = maybe_squash_history(cfg, dry_run)
+    if squashed:
+        out["history_squash"] = squashed
 
     stall = detect_stall(state.history, state.step)
     if stall:
