@@ -128,6 +128,8 @@ class DivergenceDetector:
         min_scaler_scale: float = 2**6,
         max_skipped: int = 5,
         grad_clip: float = 1.0,
+        loss_window: int = 50,
+        loss_rise_factor: float = 1.5,
     ) -> None:
         self.window: list[float] = []
         self.grad_norm_window = grad_norm_window
@@ -152,6 +154,15 @@ class DivergenceDetector:
         # non-finite loss or scaler collapse, both checked separately and
         # unconditionally.
         self.grad_norm_floor = max(grad_clip, 0.0) * 10.0
+
+        # Loss-based divergence. Compare the median of the most recent window
+        # against the median of the window before it: a real divergence drives
+        # the loss up and keeps it up, while a single bad batch does not move
+        # a median. Medians rather than means so one 10x outlier cannot fire
+        # it, and a factor rather than an absolute so it works at any scale.
+        self.loss_window = loss_window
+        self.loss_rise_factor = loss_rise_factor
+        self.losses: list[float] = []
         self.min_scaler_scale = min_scaler_scale
         self.max_skipped = max_skipped
         self.skipped = 0
@@ -173,6 +184,22 @@ class DivergenceDetector:
                 True,
             )
 
+        # Sustained rise in the loss is what divergence actually looks like.
+        self.losses.append(loss)
+        if len(self.losses) > 2 * self.loss_window:
+            self.losses.pop(0)
+        if len(self.losses) == 2 * self.loss_window:
+            half = self.loss_window
+            older = sorted(self.losses[:half])[half // 2]
+            newer = sorted(self.losses[half:])[half // 2]
+            if older > 0 and newer > older * self.loss_rise_factor:
+                return (
+                    True,
+                    f"loss median rose {older:.3f} -> {newer:.3f} over "
+                    f"{2 * half} steps at step {step}: diverging",
+                    True,
+                )
+
         if grad_norm is not None and math.isfinite(grad_norm):
             if len(self.window) >= 20:
                 median = sorted(self.window)[len(self.window) // 2]
@@ -183,14 +210,12 @@ class DivergenceDetector:
                     self.skipped += 1
                     self.skipped_recent.append(step)
                     self.skipped_recent = [s for s in self.skipped_recent if step - s <= 100]
-                    if (len(self.skipped_recent) > self.max_skipped
-                            and step >= self.warmup_steps):
-                        return (
-                            True,
-                            f"{len(self.skipped_recent)} gradient spikes in 100 steps "
-                            f"(latest {grad_norm:.1f} vs median {median:.1f})",
-                            True,
-                        )
+                    # NOT fatal. With gradient clipping active the optimiser
+                    # never applies more than `grad_clip`, so no sequence of
+                    # spikes can diverge the run -- and treating them as fatal
+                    # killed three healthy runs whose loss was descending.
+                    # The step is still skipped, which is cheap insurance
+                    # against a genuinely malformed batch.
                     return False, f"grad spike {grad_norm:.1f} (median {median:.1f}); skipping", True
             self.window.append(grad_norm)
             if len(self.window) > self.grad_norm_window:

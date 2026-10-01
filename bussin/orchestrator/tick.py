@@ -213,6 +213,15 @@ def tick(
     # ledger saturates on phantom hours and refuses to dispatch.
     n_hist = ledger.reconcile_from_history(state.history)
     n_stale = ledger.close_stale(now)
+    # A session that crashes hard never releases its lease, so it leaves no
+    # history entry and `reconcile_from_history` cannot see it. Three such
+    # records sat open billing a full session each -- 36h of phantom quota --
+    # which read as "GPU exhausted" and stopped dispatching for 14 hours.
+    # If no lease is held, nothing is running, so every open record is done.
+    if not (state.lease_obj() and state.lease_obj().is_live(now)):
+        n_orphan = ledger.close_orphans(now)
+        if n_orphan:
+            out.setdefault("closed_dispatches", {})["orphaned"] = n_orphan
     if n_hist or n_stale:
         out["closed_dispatches"] = {"from_history": n_hist, "stale": n_stale}
 

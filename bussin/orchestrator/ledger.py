@@ -269,6 +269,33 @@ class Ledger:
                 closed += 1
         return closed
 
+    def close_orphans(self, now: datetime | None = None) -> int:
+        """Close every open record, charging only the time actually elapsed.
+
+        Called when no lease is held: nothing can be running, so any record
+        still marked `running` belongs to a session that crashed without
+        releasing. Billing those at a full session each is what drove the
+        ledger to 49.8h against a 30h quota while the GPU sat idle.
+        """
+        now = now or utcnow()
+        closed = 0
+        for raw in self.dispatches:
+            if raw.get("status") != "running":
+                continue
+            start = parse(raw.get("dispatched_at"))
+            b = BUDGETS.get(raw.get("platform", ""))
+            if not start:
+                continue
+            elapsed = (now - start).total_seconds() / 3600
+            if b:
+                elapsed = min(elapsed, b.session_hours)
+            raw["status"] = "crashed"
+            raw["finished_at"] = iso(now)
+            raw["hours"] = round(max(elapsed, 0.0), 4)
+            raw["detail"] = "no lease held; session is not running"
+            closed += 1
+        return closed
+
     def close_stale(self, now: datetime | None = None) -> int:
         """Close `running` records older than the platform's session limit.
 
