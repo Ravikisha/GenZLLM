@@ -167,11 +167,22 @@ class DivergenceDetector:
         self.max_skipped = max_skipped
         self.skipped = 0
         self.skipped_recent: list[int] = []
+        self._stage: str | None = None
 
     def check(self, step: int, loss: float, grad_norm: float | None,
-              scaler_scale: float | None) -> tuple[bool, str, bool]:
+              scaler_scale: float | None,
+              stage: str | None = None) -> tuple[bool, str, bool]:
         """Returns (fatal, message, skip_this_step)."""
         import math
+
+        # The curriculum changes the data mixture at a stage boundary, so the
+        # loss legitimately steps to a new level there. Comparing across the
+        # boundary would read that as divergence and kill the run at exactly
+        # the transition -- step 18,030 for this config.
+        if stage is not None and stage != self._stage:
+            self._stage = stage
+            self.losses.clear()
+            self.window.clear()
 
         if not math.isfinite(loss):
             return True, f"loss is {loss} at step {step}", True
@@ -221,6 +232,17 @@ class DivergenceDetector:
             if len(self.window) > self.grad_norm_window:
                 self.window.pop(0)
         elif grad_norm is not None:
+            # Non-finite gradient. With a GradScaler this is the overflow
+            # signal, not a fault: the scaler discards the step and halves the
+            # scale, which is how it finds the usable range in the first
+            # place. Sustained trouble still surfaces -- as scaler collapse
+            # below `min_scaler_scale`, checked above. Without a scaler
+            # (fp32/bf16) there is nothing to absorb it, so it is fatal.
+            if scaler_scale is not None:
+                return (False,
+                        f"non-finite grad norm at step {step} "
+                        f"(scaler overflow at scale {scaler_scale:g}); skipping",
+                        True)
             return True, f"grad norm is {grad_norm} at step {step}", True
 
         return False, "", False

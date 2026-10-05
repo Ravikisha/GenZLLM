@@ -193,7 +193,7 @@ class Trainer:
             "z_loss": float(out["z_loss"].detach()) if "z_loss" in out else 0.0,
         }
 
-    def optimizer_step(self) -> tuple[float | None, float | None, bool]:
+    def optimizer_step(self, loss: float = 0.0) -> tuple[float | None, float | None, bool]:
         """Returns (grad_norm, scaler_scale, stepped)."""
         scale = None
         if self.scaler is not None:
@@ -204,7 +204,10 @@ class Trainer:
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip)
         )
 
-        fatal, message, skip = self.detector.check(self.step, 0.0, grad_norm, scale)
+        fatal, message, skip = self.detector.check(
+            self.step, loss, grad_norm, scale,
+            stage=self.curriculum.stage_at(self.step).name,
+        )
         if fatal:
             raise DivergenceError(message)
 
@@ -253,7 +256,7 @@ class Trainer:
         if not math.isfinite(agg["loss"]):
             raise DivergenceError(f"non-finite loss {agg['loss']} at step {self.step}")
 
-        grad_norm, scale, stepped = self.optimizer_step()
+        grad_norm, scale, stepped = self.optimizer_step(loss=agg["loss"])
 
         self.step += 1
         self.schedule.step_forward()
