@@ -142,6 +142,47 @@ def main() -> int:
         finally:
             shutil.rmtree(tmp6, ignore_errors=True)
 
+        print("\n=== 6c. a conflicted release keeps its history and finished flag ===")
+        # `_commit` re-reads on a conflict and copies selected fields onto the
+        # fresh state. `history` and `finished` were not on that list, so a
+        # release that lost the race -- routine, because the checkpoint push,
+        # the prune and the release all commit to the same repo within seconds
+        # -- silently dropped the session record and the finished flag. The
+        # completed 125m run showed `finished=False` with its history frozen
+        # at 31 entries for two weeks.
+        #
+        # The test must assert on what SURVIVES the merge. Test 6b injected a
+        # conflict but only checked that release() did not raise.
+        tmp7 = Path(tempfile.mkdtemp(prefix="bussin_hist_"))
+        try:
+            inner7 = LocalBackend(tmp7)
+            fired7 = {"n": 0}
+
+            class ConflictOnRelease:
+                def read(self):
+                    return inner7.read()
+
+                def write(self, state, parent_revision):
+                    # conflict only on the write that clears the lease
+                    if state.get("lease") is None and fired7["n"] == 0:
+                        fired7["n"] = 1
+                        raise CASConflict("412 Precondition Failed: branch moved")
+                    return inner7.write(state, parent_revision)
+
+            r7 = RelayState(ConflictOnRelease(), "run-6c")
+            r7.read()
+            r7.claim("worker-z", "kaggle-gpu", 600)
+            r7.release(steps_done=346, wall_seconds=11161.5,
+                       train_seconds=11042.8, finished=True)
+            got = RelayState(LocalBackend(tmp7), "run-6c").read()
+            check("history entry survives a conflicted release",
+                  len(got.history) == 1 and got.history[0]["worker_id"] == "worker-z",
+                  f"conflicts={fired7['n']} history={len(got.history)}")
+            check("finished flag survives a conflicted release",
+                  got.finished is True, f"finished={got.finished}")
+        finally:
+            shutil.rmtree(tmp7, ignore_errors=True)
+
         print("\n=== 7. two workers race for one free lease ===")
         tmp2 = Path(tempfile.mkdtemp(prefix="bussin_race_"))
         try:

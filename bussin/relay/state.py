@@ -327,6 +327,23 @@ class RelayState:
                 fresh.data_cursor = state.data_cursor
                 fresh.stage = state.stage
                 fresh.lease = state.lease
+                # `history` and `finished` were missing from this list, so a
+                # release that lost the CAS race -- routine, since the
+                # checkpoint push, the prune and the release all commit to the
+                # same repo within seconds -- silently dropped its session
+                # record and its finished flag. History froze at 10-04 while
+                # training ran for two more weeks, and a COMPLETED run stayed
+                # `finished=False`, which leaves the orchestrator dispatching
+                # sessions against it. The in-memory state is authoritative
+                # for everything this worker owns, so carry all of it.
+                fresh.history = state.history
+                fresh.finished = state.finished
+                # Same failure class, written through the same path by
+                # update() and request_rollback(): a milestone or a rollback's
+                # lr_scale lost to a conflict would silently disable the
+                # divergence-recovery mechanism.
+                fresh.milestones = state.milestones
+                fresh.lr_scale = state.lr_scale
                 state = fresh
                 time.sleep(1.0 + attempt * 2)
 
