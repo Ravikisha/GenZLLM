@@ -34,3 +34,4 @@ dashboard_preview.html
 !/data/lexicon/communities.json
 /data/real_shards/
 /data/manifests/
+/eval_run/

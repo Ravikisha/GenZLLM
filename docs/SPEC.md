@@ -1131,6 +1131,69 @@ cleaning code were never in the repository** — nor was `bussin/tokenizer/`, vi
 `tokenizer/`. Root-anchored now (`/data/`, `/tokenizer/`).
 
 
+## 5.9e The first pretraining run trained the wrong objective
+
+`bussin-125m-v1` (25,757 steps, 6.74B tokens, ~110 GPU-hours) is **not a
+next-token language model**. The loader emits aligned pairs
+(`input_ids = window[:-1]`, `labels = window[1:]`) and the model's loss shifted a
+second time (`logits[:, :-1]` against `labels[:, 1:]`), so position *i* was scored
+against token *i+2* [V].
+
+Measured on the saved weights, held-out text, NLL by prediction offset:
+
+| logits[i] predicts | NLL | perplexity |
+|---|---|---|
+| token i+1 | 8.764 | 6,400 |
+| **token i+2** | **5.398** | **221** |
+| token i+3 | 9.467 | 12,920 |
+
+### Why nothing caught it [V]
+
+| check | result | why it missed |
+|---|---|---|
+| training loss | fell smoothly to ~4.7 | skip-ahead is learnable, only harder |
+| `resume_test` | 0.0 divergence | compares a run to itself; both sides had the same objective |
+| tiny-model fit | loss 0.0810 with the bug, 0.0818 fixed | the loss cannot distinguish the targets |
+
+The one signal was a general-English loss of ~4.9 at 125M, which is about a nat
+too high; it was read as plausible.
+
+### What now guards it
+
+`scripts/objective_test.py` trains a tiny model through the real shard writer,
+loader and loss on a deterministic cycle and asserts on what was **learned**:
+old code scores 0% next-token / 100% skip-ahead, the fix 100% / 0%.
+`scripts/model_sanity_test.py` asserts init loss ~ ln(V), causality, document
+isolation, RoPE against an independent reference, and GQA grouping; all hold, so
+the double shift was the only defect found.
+
+### Register conditioning, measured on the broken model [V]
+
+`scripts/register_conditioning_test.py` scores the same held-out text under its
+true register prefix, a swapped one, and none (n=300, at the learned offset +2):
+
+| | NLL | paired difference | 95% CI |
+|---|---|---|---|
+| shuffled - true | | +0.0149 | [+0.0087, +0.0211] |
+| none - true | | -0.0090 | [-0.0147, -0.0032] |
+
+The model is weakly sensitive to the register (true beats a wrong prefix in 61.3%
+of documents) but the effect is ~0.3% of the loss, and having *no* prefix scored
+slightly better than the true one. This does **not** test the thesis: the
+objective was wrong, 82% of val text is `slang_0` so there is little to
+condition on, and the no-prefix arm is out of distribution. It is the baseline
+the corrected run must beat.
+
+### Benchmark gaps found on the way [V]
+
+* the contamination index was built from the 20,501-document smoke corpus, never
+  from the training set, and the 13-gram check returns 0 for any text under 13
+  words: only 303 of 949 items (31.9%) are checkable at all;
+* `outdated_slang` labels derive from lexicon age and carry its defects (a
+  person's name is labelled "currently in common use");
+* 3 of the 15 tasks have data.
+
+
 ## 5.10 Profanity handling
 
 **Keep it. Tag it. Do not delete it.**
