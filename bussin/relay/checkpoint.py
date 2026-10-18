@@ -375,13 +375,22 @@ class CheckpointStore:
         )
         return Path(path) / name
 
-    def prune(self, keep: list[str]) -> list[str]:
-        """Delete rolling checkpoints not in `keep`. Milestones are never pruned."""
+    def prune(self, keep: list[str], *, prefix: str) -> list[str]:
+        """Delete this run's rolling checkpoints that are not in `keep`.
+
+        `prefix` is required and scopes the deletion to one run (see
+        `checkpoint_prefix`). Runs share a repository, and this used to remove
+        every `ckpt-*` not in the CURRENT run's keep-set -- i.e. another run's
+        checkpoints -- so a second run would have wiped the first on its first
+        prune. Milestones are never pruned.
+        """
+        if not prefix or prefix == "ckpt-":
+            raise ValueError("prune needs a run-specific prefix, not the shared 'ckpt-'")
         removed: list[str] = []
         if not self.is_hf:
             root = Path(self.uri)
             for d in root.iterdir() if root.exists() else []:
-                if d.is_dir() and d.name.startswith("ckpt-") and d.name not in keep:
+                if d.is_dir() and d.name.startswith(prefix) and d.name not in keep:
                     shutil.rmtree(d)
                     removed.append(d.name)
             return removed
@@ -391,7 +400,7 @@ class CheckpointStore:
         names = {
             f.split("/")[0]
             for f in api.list_repo_files(self.repo_id)
-            if f.startswith("ckpt-")
+            if f.startswith(prefix)
         }
         for name in names - set(keep):
             api.delete_folder(repo_id=self.repo_id, path_in_repo=name,
@@ -400,5 +409,10 @@ class CheckpointStore:
         return removed
 
 
-def checkpoint_name(step: int) -> str:
-    return f"ckpt-{step:08d}"
+def checkpoint_prefix(run_id: str) -> str:
+    """Every checkpoint a run writes starts with this, and only those."""
+    return f"ckpt-{run_id}-"
+
+
+def checkpoint_name(step: int, run_id: str) -> str:
+    return f"{checkpoint_prefix(run_id)}{step:08d}"

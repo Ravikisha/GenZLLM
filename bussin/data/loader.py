@@ -156,11 +156,32 @@ class PackedDataset:
             raise ValueError("manifest contains no shards")
 
     def _shard_order(self, epoch: int) -> list[int]:
-        order = list(range(len(self.manifest.shards)))
-        if self.shuffle_shards:
-            rng = np.random.default_rng(self.seed + epoch)
-            rng.shuffle(order)
-        return order
+        """Shard visiting order. Shuffles within a stage, never across stages.
+
+        The curriculum IS the shard order: S1 shards first, the Gen-Z anneal
+        last. This used to shuffle every shard globally, so the 75-shard run
+        visited them in a random permutation -- the "S3 anneal" window was 75%
+        S1 shards -- and the S1/S2/S3 labels in the logs were only a function of
+        step count. Runs of equal stage are shuffled independently, so epoch-to-
+        epoch variety is kept while the stage sequence is preserved.
+        """
+        shards = self.manifest.shards
+        n = len(shards)
+        order = list(range(n))
+        if not self.shuffle_shards:
+            return order
+        rng = np.random.default_rng(self.seed + epoch)
+        out: list[int] = []
+        i = 0
+        while i < n:
+            j = i
+            while j < n and shards[j].stage == shards[i].stage:
+                j += 1
+            run = order[i:j]
+            rng.shuffle(run)
+            out.extend(run)
+            i = j
+        return out
 
     def __iter__(self) -> Iterator[dict[str, np.ndarray]]:
         while True:

@@ -122,6 +122,25 @@ class Precision:
 # ------------------------------------------------------------------ #
 
 
+class _LossOnly(torch.nn.Module):
+    """Forward that returns only the scalar losses.
+
+    Under DataParallel every output is gathered onto device 0. The model's
+    default output includes the logits -- (batch, seq, 49,152) in fp32, ~0.8 GB
+    per micro-batch per device -- so gathering them would add GBs of PCIe
+    traffic and device-0 memory to every micro-step for tensors the trainer
+    never reads.
+    """
+
+    def __init__(self, model: torch.nn.Module) -> None:
+        super().__init__()
+        self.m = model
+
+    def forward(self, input_ids, labels=None, document_ids=None):
+        out = self.m(input_ids, labels=labels, document_ids=document_ids)
+        return {k: out[k] for k in ("loss", "ce_loss", "z_loss") if k in out}
+
+
 class Trainer:
     def __init__(
         self,
@@ -144,6 +163,18 @@ class Trainer:
         self.device = device
         self.precision = precision or Precision(info)
         self.curriculum = curriculum or Curriculum(train_cfg.total_steps)
+
+        # Devices the forward really runs on. `plan_batch` divides the global
+        # batch across `info.n_devices`, but for ~25,000 steps nothing actually
+        # spread the work: a "2x T4" session used one GPU, served 131,142
+        # tokens per step against a planned 262,144, and every token count and
+        # throughput figure was double. The loader must now yield
+        # `plan.micro_batch * n_dp` sequences per micro-step.
+        self.n_dp = (info.n_devices
+                     if info.device_type == "cuda" and info.n_devices > 1 else 1)
+        wrapped = _LossOnly(model)
+        self._fwd = (torch.nn.DataParallel(wrapped, device_ids=list(range(self.n_dp)))
+                     if self.n_dp > 1 else wrapped)
 
         self.optimizer = torch.optim.AdamW(
             model.param_groups(train_cfg.weight_decay),
@@ -175,11 +206,13 @@ class Trainer:
 
     def train_micro_batch(self, batch: dict[str, torch.Tensor], accum: int) -> dict[str, float]:
         with self.precision.autocast():
-            out = self.model(
+            out = self._fwd(
                 batch["input_ids"],
                 labels=batch["labels"],
                 document_ids=batch.get("document_ids"),
             )
+            # DataParallel gathers one scalar per device into a vector.
+            out = {k: v.mean() for k, v in out.items()}
             loss = out["loss"] / accum
 
         if self.scaler is not None:
@@ -247,11 +280,25 @@ class Trainer:
         lr = self.schedule.apply(self.optimizer)
 
         agg = {"loss": 0.0, "ce_loss": 0.0, "z_loss": 0.0}
+        served = 0
         for _ in range(self.plan.grad_accum):
             batch = next(loader)
+            served += int(batch["input_ids"].numel())
             m = self.train_micro_batch(batch, self.plan.grad_accum)
             for k in agg:
                 agg[k] += m[k] / self.plan.grad_accum
+
+        # Count what the loader actually served, and refuse to continue if it is
+        # not what the plan assumed. The previous run served exactly half of the
+        # planned tokens per step for its whole length and nothing noticed,
+        # because the recorded figure was computed from the plan, not the data.
+        if served != self.plan.global_batch_tokens:
+            raise RuntimeError(
+                f"step {self.step}: loader served {served:,} tokens but the plan "
+                f"assumes {self.plan.global_batch_tokens:,} "
+                f"(micro_batch={self.plan.micro_batch}, accum={self.plan.grad_accum}, "
+                f"n_dp={self.n_dp}). The loader batch must be micro_batch * n_dp."
+            )
 
         if not math.isfinite(agg["loss"]):
             raise DivergenceError(f"non-finite loss {agg['loss']} at step {self.step}")
@@ -261,7 +308,7 @@ class Trainer:
         self.step += 1
         self.schedule.step_forward()
         if stepped:
-            self.tokens_seen += self.plan.global_batch_tokens
+            self.tokens_seen += served
         dt = time.monotonic() - t0
         self.train_seconds += dt
 
@@ -270,7 +317,7 @@ class Trainer:
             "stage": self.curriculum.stage_at(self.step).name,
             "tokens": self.tokens_seen, "grad_norm": grad_norm,
             "scaler_scale": scale, "step_s": round(dt, 4),
-            "tok_per_s": int(self.plan.global_batch_tokens / dt) if dt > 0 else 0,
+            "tok_per_s": int(served / dt) if dt > 0 else 0,
             **{k: round(v, 5) for k, v in agg.items()},
         }
         self.metrics.append(row)
@@ -286,9 +333,9 @@ class Trainer:
                 batch = next(loader)
             except StopIteration:
                 break
-            out = self.model(batch["input_ids"], labels=batch["labels"],
-                             document_ids=batch.get("document_ids"))
-            total += float(out["ce_loss"])
+            out = self._fwd(batch["input_ids"], labels=batch["labels"],
+                            document_ids=batch.get("document_ids"))
+            total += float(out["ce_loss"].mean())
             n += 1
         self.model.train()
         if n == 0:
@@ -306,7 +353,7 @@ class Trainer:
 
     def save(self, out_root: str | Path, data_cursor: dict, val_loss: float | None = None,
              is_milestone: bool = False) -> Path:
-        name = checkpoint_name(self.step)
+        name = checkpoint_name(self.step, self.cfg.run_id)
         meta = CheckpointMeta(
             step=self.step, tokens_seen=self.tokens_seen,
             stage=self.curriculum.stage_at(self.step).name,

@@ -1,0 +1,103 @@
+# bussin-125m realign -- continue from bussin-125m-v1's WEIGHTS with a corrected loss.
+#
+# Why this run exists (docs/SPEC.md 5.9e): v1 trained 25,757 steps on a
+# double-shifted target, so its logits predict the token AFTER the next one. Its
+# weights know the language but the output head answers the wrong question. This
+# run keeps the weights, resets everything else, and trains the right objective.
+#
+# Three other defects were found preparing it, all fixed in code and covered by
+# scripts/accounting_test.py:
+#   * a "2x T4" session ran on ONE GPU (nothing wrapped the model), served half
+#     the planned tokens per step, and double-counted tokens_seen -- v1 really saw
+#     3.38B tokens, not 6.74B;
+#   * shards were shuffled globally, so the S1->S2->S3 curriculum never ran;
+#   * checkpoint pruning was not run-scoped and would have deleted v1's weights.
+#
+# GATE (decide before looking): the first checkpoint lands ~50 min in. Train CE is
+# logged per step in that checkpoint's metrics.jsonl. v1's weights score 8.76 NLL
+# at next-token, so a realigning model should fall steeply; if it has not dropped
+# well below ~7 by ~100M tokens, stop and retrain from scratch instead.
+
+init_from:
+  repo: GodAsap/bussin-ckpt
+  ckpt: archive/v1-skipahead      # weights only; hash-checked against its manifest
+
+model:
+  name: bussin-125m
+  vocab_size: 49152          # <= 65536 so token shards store as uint16 (SPEC 6.7)
+  n_layers: 14
+  d_model: 768
+  n_heads: 12
+  n_kv_heads: 4       # GQA
+  head_dim: 64
+  max_seq_len: 1024
+  tie_embeddings: true
+  norm_eps: 1.0e-5
+  rope_theta: 10000.0
+  dropout: 0.0
+  z_loss: 1.0e-4             # guards fp16 logit drift on pre-Ampere GPUs
+  use_document_mask: true    # packed short chat messages must not attend across
+
+train:
+  run_id: bussin-125m-realign-v1
+  # Measured from scripts/make_realign_manifest.py: 9 S2 shards + all 5 S3 shards.
+  total_tokens: 1066332700
+  total_steps: 4067
+  global_batch_tokens: 262144
+  seq_len: 1024
+
+  # A realign, not a fresh start: lower peak than v1's 6e-4 so the pretrained
+  # features are adapted rather than overwritten.
+  lr_max: 0.0003
+  lr_min: 3.0e-05
+  warmup_steps: 150
+  stable_frac: 0.77          # WSD: decay begins at step 3131, where S3 begins
+  weight_decay: 0.1
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  grad_clip: 1.0
+
+  log_every: 10
+  val_every: 250
+  val_batches: 20
+  full_val_every: 1000
+  checkpoint_every_s: 3000   # 50 min: the first checkpoint is the gate
+  milestone_every: 1000
+  heartbeat_every_s: 600
+
+  gradient_checkpointing: false
+  seed: 1337
+
+# Micro-batch is PER DEVICE. With data-parallel over both T4s the loader yields
+# micro_batch * n_dp sequences per micro-step: 4 x 2 dev x 32 accum = 256 seq.
+batch:
+  micro_batch: null
+  micro_batch_hints:
+    "kaggle-gpu:T4": 4
+    "kaggle-tpu": 16
+    "local:cpu": 1
+
+# Stage boundaries are fractions of total_steps and match the shard token shares:
+# 9 S2 shards = 0.822B of 1.066B = 0.7705. S3 begins where the LR starts decaying.
+curriculum:
+  - name: S2
+    until_frac: 0.7705
+    mixture: {general: 0.45, internet: 0.35, genz: 0.15, lexicon: 0.02, hinglish: 0.03}
+  - name: S3
+    until_frac: 1.000
+    mixture: {general: 0.20, internet: 0.25, genz: 0.48, lexicon: 0.03, hinglish: 0.04}
+
+relay:
+  state_uri: hf://CHANGEME/bussin-ckpt      # real value supplied by BUSSIN_CKPT_REPO
+  ckpt_uri:  hf://CHANGEME/bussin-ckpt
+  keep_rolling: 2
+  lease_margin_s: 1800
+
+data:
+  manifest: /kaggle/input/bussin-corpus/manifest.json
+  val_manifest: /kaggle/input/bussin-corpus/val_manifest.json
+  repo: GodAsap/bussin-corpus
+  prefix: data/shards/train/
+  manifest_name: manifest_realign.json
+  val_prefix: data/shards/val/
+  tokenizer: tokenizer/tokenizer.json

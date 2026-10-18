@@ -29,7 +29,7 @@ from ..model.bussin_model import BussinForCausalLM
 from ..model.config import BussinConfig
 from ..train.schedule import Curriculum, StageSpec, build_schedule
 from ..train.trainer import DivergenceError, Precision, TrainConfig, Trainer
-from .checkpoint import (CheckpointStore, checkpoint_name, load_checkpoint,
+from .checkpoint import (CheckpointStore, checkpoint_name, checkpoint_prefix, load_checkpoint,
                          writable_scratch)
 from .platform import BatchPlan, get_platform_info, plan_batch
 from .state import LeaseHeld, RelayState, make_backend
@@ -127,6 +127,42 @@ def fetch_shards(repo: str, prefix: str, dest: Path, token: str | None,
     print(f"[bootstrap] shards ready in {time.time() - t0:.0f}s; "
           f"disk free {_free_gb(str(dest)):.1f} GB", flush=True)
     return Path(mpath)
+
+
+def _init_weights_from(spec: dict, model: torch.nn.Module) -> None:
+    """Initialise a FRESH run from another run's weights, and nothing else.
+
+    Only the weights. The optimizer moments, schedule and data cursor describe a
+    different run, and for the realign run they describe the wrong objective, so
+    they are deliberately left at their fresh values. The weights are checked
+    against the checkpoint's own manifest before use.
+    """
+    import hashlib
+    import json as _json
+
+    from huggingface_hub import hf_hub_download
+
+    repo = spec.get("repo") or os.environ.get("BUSSIN_CKPT_REPO", "")
+    ckpt = spec["ckpt"]
+    token = os.environ.get("HF_TOKEN")
+    d = writable_scratch() / "init_from" / ckpt
+    d.mkdir(parents=True, exist_ok=True)
+    import shutil as _sh
+    for name in ("MANIFEST.sha256", "meta.json", "data_cursor.json", "config.json",
+                 "model.safetensors"):
+        p = hf_hub_download(repo, f"{ckpt}/{name}", repo_type="model", token=token)
+        _sh.copy(p, d / name)
+    want = _json.loads((d / "MANIFEST.sha256").read_text(encoding="utf-8"))
+    h = hashlib.sha256()
+    with open(d / "model.safetensors", "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 22), b""):
+            h.update(chunk)
+    if h.hexdigest() != want["model.safetensors"]["sha256"]:
+        raise SystemExit(f"init_from {ckpt}: model.safetensors fails its manifest hash")
+    info = load_checkpoint(d, model, strict_verify=False)
+    print(f"[bootstrap] initialised WEIGHTS ONLY from {repo}:{ckpt} "
+          f"(its step {info['meta']['step']}); optimizer, schedule and data cursor "
+          f"start fresh", flush=True)
 
 
 def resolve_data_path(path: str | None, max_depth: int = 6) -> str | None:
@@ -326,6 +362,8 @@ def run(config_path: str, *, dry_run: bool = False, max_steps: int | None = None
             print(f"[bootstrap] resumed step {trainer.step} "
                   f"(written by {loaded['meta'].get('written_by')} on "
                   f"{loaded['meta'].get('platform')})", flush=True)
+        elif cfg.get("init_from"):
+            _init_weights_from(cfg["init_from"], model)
 
         # data ------------------------------------------------------------
         data_cfg = cfg.get("data", {}) or {}
@@ -337,6 +375,7 @@ def run(config_path: str, *, dry_run: bool = False, max_steps: int | None = None
                 data_cfg.get("repo") or os.environ.get("BUSSIN_CORPUS_REPO", ""),
                 data_cfg.get("prefix", "data/shards/train/"),
                 scratch, os.environ.get("HF_TOKEN"),
+                manifest_name=data_cfg.get("manifest_name", "manifest.json"),
             )
             manifest_path = str(manifest_path) if manifest_path else None
         if not manifest_path or not Path(manifest_path).exists():
@@ -347,7 +386,7 @@ def run(config_path: str, *, dry_run: bool = False, max_steps: int | None = None
         manifest = Manifest.load(manifest_path)
         dataset = PackedDataset(manifest, train_cfg.seq_len, cursor=cursor,
                                 seed=train_cfg.seed)
-        loader = iter(TorchLoader(dataset, plan.micro_batch, str(device)))
+        loader = iter(TorchLoader(dataset, plan.micro_batch * trainer.n_dp, str(device)))
 
         val_path = resolve_data_path(data_cfg.get("val_manifest"))
         if data_cfg.get("val_manifest") and (
@@ -362,7 +401,7 @@ def run(config_path: str, *, dry_run: bool = False, max_steps: int | None = None
             val_ds = PackedDataset(Manifest.load(val_path),
                                    train_cfg.seq_len, shuffle_shards=False,
                                    seed=train_cfg.seed)
-            val_loader = iter(TorchLoader(val_ds, plan.micro_batch, str(device)))
+            val_loader = iter(TorchLoader(val_ds, plan.micro_batch * trainer.n_dp, str(device)))
 
         print(f"[bootstrap] corpus: {manifest.total_tokens / 1e9:.3f}B tokens "
               f"in {len(manifest.shards)} shards; cursor {cursor.to_dict()}", flush=True)
@@ -447,7 +486,7 @@ def _persist(trainer: Trainer, relay: RelayState, dataset: PackedDataset,
     cursor = dataset.state()
     local = writable_scratch()
     path = trainer.save(local, cursor, val_loss, is_milestone)
-    name = checkpoint_name(trainer.step)
+    name = checkpoint_name(trainer.step, trainer.cfg.run_id)
 
     store = CheckpointStore(ckpt_uri)
     store.push(path, name)
@@ -465,7 +504,8 @@ def _persist(trainer: Trainer, relay: RelayState, dataset: PackedDataset,
         {name} | ({fresh.latest_ckpt} if fresh.latest_ckpt else set()), reverse=True
     )[:rolling]
     try:
-        removed = store.prune(sorted(keep | set(recent)))
+        removed = store.prune(sorted(keep | set(recent)),
+                              prefix=checkpoint_prefix(trainer.cfg.run_id))
         if removed:
             print(f"  pruned {len(removed)} old checkpoints", flush=True)
     except Exception as exc:  # pruning must never take down a training run

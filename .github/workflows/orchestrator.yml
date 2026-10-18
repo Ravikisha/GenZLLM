@@ -24,7 +24,7 @@ on:
         # scheduled ticks managed a run that did not exist and left the real
         # one idle for 15 hours after its session ended.
         description: "training config"
-        default: "configs/125m.yaml"
+        default: "configs/125m-realign.yaml"
       platform:
         # Pinned to the validated backend. The ranker puts kaggle-tpu first on
         # assumed throughput, but that backend has never completed a session:
@@ -78,7 +78,7 @@ jobs:
           HF_HUB_DISABLE_SYMLINKS_WARNING: "1"
         run: |
           python -m bussin.orchestrator.tick \
-            --config "${{ github.event.inputs.config || 'configs/125m.yaml' }}" \
+            --config "${{ github.event.inputs.config || 'configs/125m-realign.yaml' }}" \
             --platform "${{ github.event.inputs.platform || 'kaggle-gpu' }}" \
             ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }} \
             | tee tick.log
