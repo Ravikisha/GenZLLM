@@ -307,16 +307,29 @@ class BussinForCausalLM(nn.Module):
 
         out: dict[str, torch.Tensor] = {"logits": logits}
         if labels is not None:
-            shift_logits = logits[:, :-1].reshape(-1, self.cfg.vocab_size)
-            shift_labels = labels[:, 1:].reshape(-1)
-            ce = F.cross_entropy(shift_logits, shift_labels, ignore_index=-100)
+            # CONTRACT: labels[:, i] is the target for logits[:, i]. The data
+            # loader emits explicit, already-aligned pairs
+            # (input_ids = window[:-1], labels = window[1:]), so the model must
+            # NOT shift again.
+            #
+            # It used to. It applied the HF-style `logits[:, :-1]` vs
+            # `labels[:, 1:]` on top of the loader's shift, so position i was
+            # scored against token i+2: the model learned to predict the token
+            # AFTER the next one. 25,757 steps (~110 GPU-hours, 6.74B tokens)
+            # trained that objective. Training loss looked healthy throughout
+            # because skip-ahead prediction is learnable, only harder; the
+            # first next-token evaluation measured NLL 8.76 against a logged
+            # training loss of ~4.7, and 5.40 when scored at offset +2.
+            flat_logits = logits.reshape(-1, self.cfg.vocab_size)
+            flat_labels = labels.reshape(-1)
+            ce = F.cross_entropy(flat_logits, flat_labels, ignore_index=-100)
             out["ce_loss"] = ce
 
             loss = ce
             if self.cfg.z_loss > 0:
-                valid = shift_labels != -100
+                valid = flat_labels != -100
                 if valid.any():
-                    lse = torch.logsumexp(shift_logits[valid], dim=-1)
+                    lse = torch.logsumexp(flat_logits[valid], dim=-1)
                     z = self.cfg.z_loss * (lse**2).mean()
                     out["z_loss"] = z
                     loss = loss + z
