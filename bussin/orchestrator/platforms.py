@@ -245,9 +245,22 @@ class KaggleAdapter(Adapter):
             (work / "kernel-metadata.json").write_text(
                 json.dumps(meta, indent=2), encoding="utf-8"
             )
-            self.api().kernels_push(str(work))
+            resp = self.api().kernels_push(str(work))
+            # A rejected push does not raise: the client returns a response whose
+            # `error` field carries the reason. Ignoring it made the tick report
+            # "dispatched" -- and open a ledger record for a session that never
+            # existed -- when Kaggle had refused the launch.
+            err = (getattr(resp, "error", None) or getattr(resp, "errorNew", None)
+                   or getattr(resp, "error_new", None))
+            bad = (getattr(resp, "invalid_dataset_sources", None)
+                   or getattr(resp, "invalidDatasetSources", None) or [])
+            if err or bad:
+                return DispatchResult(
+                    False, self.name,
+                    detail=f"kaggle rejected the push: {err or ''} "
+                           f"{('invalid dataset sources: ' + str(list(bad))) if bad else ''}".strip()[:300])
             return DispatchResult(True, self.name, ref=slug,
-                                  detail=f"pushed {slug}")
+                                  detail=f"pushed {slug} (version {getattr(resp, 'version_number', getattr(resp, 'versionNumber', '?'))})")
         except Exception as exc:
             return DispatchResult(False, self.name,
                                   detail=f"{type(exc).__name__}: {str(exc)[:200]}")

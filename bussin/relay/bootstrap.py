@@ -483,13 +483,25 @@ def run(config_path: str, *, dry_run: bool = False, max_steps: int | None = None
 def _persist(trainer: Trainer, relay: RelayState, dataset: PackedDataset,
              ckpt_uri: str, val_loss: float | None, is_milestone: bool,
              relay_cfg: dict, lease_s: int) -> None:
+    import shutil
+
     cursor = dataset.state()
     local = writable_scratch()
+    # Anything left here is from a push that did not complete. Clear it before
+    # writing ~1.7 GB more, so a crashed push cannot starve the next save.
+    for stale in local.iterdir():
+        if stale.is_dir() and (stale.name.startswith("ckpt-")
+                               or stale.name.endswith(".tmp")):
+            shutil.rmtree(stale, ignore_errors=True)
     path = trainer.save(local, cursor, val_loss, is_milestone)
     name = checkpoint_name(trainer.step, trainer.cfg.run_id)
 
     store = CheckpointStore(ckpt_uri)
     store.push(path, name)
+    # Pushed, so the Hub holds the copy that matters. Keeping this one as well
+    # is what filled the disk: one 1.66 GB directory per checkpoint, for the
+    # whole session, until `torch.save` died mid-write.
+    shutil.rmtree(path, ignore_errors=True)
 
     relay.update(
         step=trainer.step, tokens_seen=trainer.tokens_seen, latest_ckpt=name,
@@ -511,7 +523,9 @@ def _persist(trainer: Trainer, relay: RelayState, dataset: PackedDataset,
     except Exception as exc:  # pruning must never take down a training run
         print(f"  prune skipped: {exc}", flush=True)
 
-    print(f"  checkpoint {name}{' [milestone]' if is_milestone else ''} pushed", flush=True)
+    free_gb = shutil.disk_usage(local).free / 1e9
+    print(f"  checkpoint {name}{' [milestone]' if is_milestone else ''} pushed "
+          f"(local disk free {free_gb:.1f} GB)", flush=True)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -52,6 +52,12 @@ def main() -> int:
     if ROOT.exists():
         shutil.rmtree(ROOT)
     ROOT.mkdir(parents=True)
+    # Earlier runs of this test (before local copies were deleted after a push)
+    # left their checkpoints behind in scratch; start from a clean slate so the
+    # assertion below measures only this run.
+    from bussin.relay.checkpoint import writable_scratch
+    for d in writable_scratch().glob("ckpt-*"):
+        shutil.rmtree(d, ignore_errors=True)
     checks: list[tuple[bool, str]] = []
 
     def check(ok: bool, label: str, detail: str = "") -> None:
@@ -88,6 +94,13 @@ def main() -> int:
           f"{step_after_1} -> {s2.get('step')}")
     check(len(s2.get("history", [])) == 2, "both sessions in history")
     check(s2.get("lease") is None, "lease released again")
+
+    # A checkpoint is ~1.66 GB (weights + Adam state). One kept per push filled a
+    # Kaggle session's disk after ~10 hours and killed it inside torch.save.
+    left = sorted(d.name for d in writable_scratch().iterdir()
+                  if d.is_dir() and d.name.startswith("ckpt-"))
+    check(not left, "no local checkpoint copies are left behind after a push",
+          f"left in scratch: {left}" if left else "")
 
     w1 = s2["history"][0].get("worker_id")
     w2 = s2["history"][1].get("worker_id")
