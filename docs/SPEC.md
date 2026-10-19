@@ -1189,8 +1189,19 @@ the corrected run must beat.
 * the contamination index was built from the 20,501-document smoke corpus, never
   from the training set, and the 13-gram check returns 0 for any text under 13
   words: only 303 of 949 items (31.9%) are checkable at all;
-* `outdated_slang` labels derive from lexicon age and carry its defects (a
-  person's name is labelled "currently in common use");
+* `outdated_slang` (249 items) measures nothing. Labels are balanced 83/83/83
+  and come from Urban Dictionary entry age alone -- every `corpus_rate` is 0.0.
+  110 of 249 terms are not in the current admissibility-filtered lexicon, and
+  the items include `december 1`, `march 19`, `new years eve`, `tool shed`, a
+  person's name labelled "currently in common use", and gibberish (`dsfargeg`,
+  `bludclart`, `k8t`, `0.02`). It is excluded from any headline number until
+  rebuilt from corpus-attested status and human-reviewed;
+* `slang_understanding` (500): 14 items are non-words (`?`, `ks`, `<3333`, `l`,
+  `b9`) and 172 (34%) are not in the current lexicon. Answer positions are
+  skewed (127/147/115/111), so always choosing option 1 scores 29.4% against 25%
+  chance. The correct option is the longest only 19.6% of the time, so length is
+  not exploitable. A word-frequency screen cannot judge multi-word phrases
+  (`skill issue`, `ok boomer`) and would wrongly discard them -- review is manual;
 * 3 of the 15 tasks have data.
 
 
